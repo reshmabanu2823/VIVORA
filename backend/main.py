@@ -539,12 +539,14 @@ async def feedback(body: FeedbackIn):
             "fillers_per_minute": round(spoken_fillers / (spoken_sec / 60), 1) if spoken_sec > 0 else None,
             "avg_first_speech_delay_sec": round(sum(delays) / len(delays), 1) if delays else None,
             "level": s["level"],
+            "started_at": s.get("started_at"),
         },
         "per_question": [
             {
                 "question": t["question"],
                 "section": t["section_title"],
                 "status": t.get("status", "answered"),
+                "answer": t.get("answer", ""),
                 "verdict": t.get("verdict"),
                 "covered": t.get("covered", []),
                 "missed": t.get("missed", []),

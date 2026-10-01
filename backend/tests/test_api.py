@@ -304,6 +304,7 @@ def test_three_answered_two_skipped_counts_and_status():
     assert summary["questions_answered"] == 3
     assert summary["questions_skipped"] == 2
     assert summary["questions"] == 3  # Questions answered must NOT count skipped questions!
+    assert summary.get("started_at") is not None
 
     per_q = fb["per_question"]
     assert len(per_q) == 5
@@ -311,7 +312,9 @@ def test_three_answered_two_skipped_counts_and_status():
     skipped_turns = [t for t in per_q if t["status"] == "skipped"]
     assert len(answered_turns) == 3
     assert len(skipped_turns) == 2
+    assert "LeGO-LOAM" in answered_turns[0]["answer"]
     for t in skipped_turns:
+        assert t["answer"] == "[SKIPPED]"
         assert t["verdict"] is None
         assert t["covered"] == []
         assert t["missed"] == []

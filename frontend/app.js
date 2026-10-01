@@ -13,6 +13,7 @@
 
 import * as api from './api.js';
 import * as ui from './ui.js';
+import { generateTranscriptPDF } from './pdf.js';
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const state = {
@@ -21,6 +22,9 @@ const state = {
   // Upload
   uploadId: null,
   sections: [],
+
+  // Feedback & reports
+  feedbackData: null,
 
   // Configuration
   level: 'normal',
@@ -513,6 +517,7 @@ async function endSession() {
 
   try {
     const feedback = await api.getFeedback(state.sessionId);
+    state.feedbackData = feedback;
     ui.showFeedback(feedback);
     wireFeedbackControls();
   } catch (err) {
@@ -524,21 +529,23 @@ async function endSession() {
 }
 
 function wireFeedbackControls() {
-  // Download transcript
+  // Download transcript (PDF)
   document.getElementById('btn-download-transcript')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-download-transcript');
     ui.setButtonLoading(btn, true);
     try {
-      const md = await api.getTranscript(state.sessionId);
-      const blob = new Blob([md], { type: 'text/markdown' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'vivora-transcript.md';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (_) {
-      ui.showToast('Could not download transcript. Please try again.');
+      let feedback = state.feedbackData;
+      if (!feedback && state.sessionId) {
+        feedback = await api.getFeedback(state.sessionId);
+        state.feedbackData = feedback;
+      }
+      if (!feedback) {
+        throw new Error('No feedback data available for PDF export');
+      }
+      generateTranscriptPDF(feedback, state);
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      ui.showToast('Could not download PDF transcript. Please try again.');
     } finally {
       ui.setButtonLoading(btn, false);
     }
@@ -566,6 +573,7 @@ function startOver(keepUpload = false) {
   state.currentQuestion = null;
   state.questionNumber = 0;
   state.submitting = false;
+  state.feedbackData = null;
 
   initStartScreen();
 
