@@ -36,9 +36,13 @@ Submit an answer and get the next question.
   "question_id": 1,
   "answer": "transcript text",
   "duration_sec": 34,
-  "first_speech_delay_sec": 3
+  "first_speech_delay_sec": 3,
+  "input_mode": "voice"
 }
 ```
+`input_mode` is `"voice"` (default) or `"typed"`. Typed answers are left out of pace (WPM) and
+response-delay statistics, because typing time says nothing about speaking.
+
 **Response 200**
 ```json
 {

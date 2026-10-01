@@ -53,6 +53,12 @@ def _is_heading(line: str) -> bool:
     return s.isupper() and 3 <= len(s) <= 60 and len(s.split()) <= 8
 
 
+def _nice(title: str) -> str:
+    """Keep the heading as the student wrote it; only fix ALL-CAPS headings."""
+    title = title.strip()
+    return title.title() if title.isupper() else title
+
+
 def _words(text: str) -> list[str]:
     return text.split()
 
@@ -83,7 +89,7 @@ def split_sections(text: str) -> list[dict]:
             found_heading = True
             if buf:
                 raw.append((title, buf))
-            title, buf = re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", line.strip()).rstrip(":").title(), []
+            title, buf = _nice(re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", line.strip()).rstrip(":")), []
         else:
             buf.append(line)
     raw.append((title, buf))

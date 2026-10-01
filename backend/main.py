@@ -40,6 +40,7 @@ class TurnIn(BaseModel):
     answer: str = Field(max_length=6000)
     duration_sec: float = Field(default=0, ge=0, le=900)
     first_speech_delay_sec: float | None = Field(default=None, ge=0, le=900)
+    input_mode: Literal["voice", "typed"] = "voice"   # typed answers are excluded from pace and delay stats
 
 
 class NudgeIn(BaseModel):
@@ -182,10 +183,12 @@ async def turn(body: TurnIn):
         raise _llm_error(e)
     ev = _clean_eval(raw)
 
-    wpm = metrics.words_per_minute(answer, body.duration_sec)
+    voice = body.input_mode == "voice"
+    wpm = metrics.words_per_minute(answer, body.duration_sec) if voice else None
     s["turns"].append({"question_id": cur["id"], "question": cur["text"], "section_id": section["id"],
                        "section_title": section["title"], "answer": answer, "duration_sec": body.duration_sec,
-                       "first_speech_delay_sec": body.first_speech_delay_sec, "wpm": wpm,
+                       "first_speech_delay_sec": body.first_speech_delay_sec if voice else None,
+                       "input_mode": body.input_mode, "wpm": wpm,
                        "fillers": metrics.count_fillers(answer), **{k: ev[k] for k in ("verdict", "covered", "missed")}})
 
     evaluation = {k: ev[k] for k in ("verdict", "covered", "missed")}
@@ -242,10 +245,13 @@ async def feedback(body: FeedbackIn):
 
     turns = s["turns"]
     total_fillers = sum(t["fillers"]["total"] for t in turns)
-    total_sec = sum(t["duration_sec"] for t in turns)
-    total_words = sum(len(t["answer"].split()) for t in turns)
-    avg_wpm = round(total_words / (total_sec / 60), 1) if total_sec > 0 else None
-    delays = [t["first_speech_delay_sec"] for t in turns if t["first_speech_delay_sec"] is not None]
+    # Pace and delay only make sense for spoken answers; typed answers are left out.
+    spoken = [t for t in turns if t.get("input_mode") == "voice" and t["duration_sec"] > 0]
+    spoken_sec = sum(t["duration_sec"] for t in spoken)
+    spoken_words = sum(len(t["answer"].split()) for t in spoken)
+    spoken_fillers = sum(t["fillers"]["total"] for t in spoken)
+    avg_wpm = round(spoken_words / (spoken_sec / 60), 1) if spoken_sec > 0 else None
+    delays = [t["first_speech_delay_sec"] for t in spoken if t["first_speech_delay_sec"] is not None]
 
     transcript = "\n\n".join(
         f"[{t['section_title']}] Q: {t['question']}\nA: {t['answer']}\nCovered: {t['covered']}\nMissed: {t['missed']}"
@@ -264,8 +270,8 @@ async def feedback(body: FeedbackIn):
 
     report = {
         "summary": {"questions": len(turns), "avg_wpm": avg_wpm, "pace_note": metrics.pace_note(avg_wpm),
-                    "filler_count": total_fillers,
-                    "fillers_per_minute": round(total_fillers / (total_sec / 60), 1) if total_sec > 0 else None,
+                    "filler_count": total_fillers, "spoken_answers": len(spoken),
+                    "fillers_per_minute": round(spoken_fillers / (spoken_sec / 60), 1) if spoken_sec > 0 else None,
                     "avg_first_speech_delay_sec": round(sum(delays) / len(delays), 1) if delays else None,
                     "level": s["level"]},
         "per_question": [{"question": t["question"], "section": t["section_title"], "verdict": t["verdict"],

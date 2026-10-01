@@ -20,7 +20,7 @@ def words_per_minute(text: str, duration_sec: float) -> float | None:
 
 def pace_note(wpm: float | None) -> str:
     if wpm is None:
-        return "not enough data"
+        return "Pace is measured only on spoken answers"
     if wpm < 100:
         return "a bit slow; fine if you are thinking, but try to keep momentum"
     if wpm <= 160:

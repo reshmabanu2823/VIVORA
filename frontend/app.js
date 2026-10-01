@@ -371,9 +371,9 @@ function wireSessionControls() {
     }
   });
 
-  // Done answering
+  // Done answering (voice)
   document.getElementById('btn-done')?.addEventListener('click', () => {
-    if (state.current === 'listening') submitAnswer();
+    if (state.current === 'listening') submitAnswer('voice');
   });
 
   // Repeat question (voice controls)
@@ -403,14 +403,9 @@ function wireSessionControls() {
   // Mic toggle
   document.getElementById('btn-mic')?.addEventListener('click', toggleMic);
 
-  // Typing panel submit
+  // Typing panel submit (typed)
   document.getElementById('btn-type-submit')?.addEventListener('click', () => {
-    const ta = document.getElementById('type-answer');
-    if (ta) {
-      ui.setFinalTranscript(ta.value.trim());
-      ta.value = '';
-    }
-    submitAnswer();
+    submitAnswer('typed');
   });
 
   // Skip button (wired dynamically in showNudgeActions)
@@ -573,7 +568,7 @@ function startSilenceAutoSubmit() {
 
   state.silenceTimer = setTimeout(() => {
     // Auto-submit
-    submitAnswer();
+    submitAnswer('voice');
   }, AUTO_SUBMIT_MS);
 
   // Countdown display
@@ -593,7 +588,7 @@ function startSilenceAutoSubmit() {
   }
 }
 
-async function submitAnswer() {
+async function submitAnswer(explicitMode = null) {
   if (state.submitting) return;
   if (state.current !== 'listening') return;
   state.submitting = true;
@@ -604,8 +599,23 @@ async function submitAnswer() {
   ui.setMicActive(false);
   setListeningControls(false);
 
+  // Determine inputMode
+  const isTypingPanelOpen = document.getElementById('typing-panel') && !document.getElementById('typing-panel').hidden;
+  const inputMode = explicitMode || (isTypingPanelOpen || state.voiceMode === false ? 'typed' : 'voice');
+
   // Get answer text
-  const answerText = (ui.getFinalTranscript ? ui.getFinalTranscript() : '') || '';
+  let answerText = '';
+  if (inputMode === 'typed') {
+    const ta = document.getElementById('type-answer');
+    if (ta && ta.value.trim()) {
+      answerText = ta.value.trim();
+      ta.value = '';
+    } else {
+      answerText = (ui.getFinalTranscript ? ui.getFinalTranscript() : '') || '';
+    }
+  } else {
+    answerText = (ui.getFinalTranscript ? ui.getFinalTranscript() : '') || '';
+  }
 
   // Confirm if empty
   if (!answerText.trim()) {
@@ -616,19 +626,30 @@ async function submitAnswer() {
     }
   }
 
-  // Calculate timings
-  const now = Date.now();
-  const firstSpeechDelay = state.firstSpeechTime && state.ttsEndTime
-    ? (state.firstSpeechTime - state.ttsEndTime) / 1000
-    : null;
-  const duration = state.answerStartTime
-    ? (now - state.answerStartTime) / 1000
-    : 0;
+  // Calculate timings based on inputMode:
+  // 1. When the student submits a typed answer, send input_mode "typed", duration_sec 0 and first_speech_delay_sec null.
+  // 2. For spoken answers send input_mode "voice" as before.
+  let duration = 0;
+  let firstSpeechDelay = null;
+
+  if (inputMode === 'voice') {
+    const now = Date.now();
+    firstSpeechDelay = state.firstSpeechTime && state.ttsEndTime
+      ? Math.max(0, (state.firstSpeechTime - state.ttsEndTime) / 1000)
+      : null;
+    duration = state.answerStartTime
+      ? Math.max(0, (now - state.answerStartTime) / 1000)
+      : 0;
+  } else {
+    duration = 0;
+    firstSpeechDelay = null;
+  }
 
   // Store for potential 502 retry
   state.pendingAnswer = answerText;
   state.pendingDuration = duration;
   state.pendingDelay = firstSpeechDelay;
+  state.pendingInputMode = inputMode;
 
   // Add to history
   ui.addHistoryTurn(state.currentQuestion.text, answerText || '(no answer)', 'partial');
@@ -636,13 +657,15 @@ async function submitAnswer() {
   transition('thinking');
   ui.setPresenceState('thinking');
 
-  await doSubmitTurn(answerText, duration, firstSpeechDelay);
+  await doSubmitTurn(answerText, duration, firstSpeechDelay, inputMode);
 }
 
-async function doSubmitTurn(answer, duration, delay) {
+async function doSubmitTurn(answer, duration, delay, inputMode = 'voice') {
   const btnDone = document.getElementById('btn-done');
+  const btnTypeSubmit = document.getElementById('btn-type-submit');
   ui.setButtonLoading(btnDone, true);
-  ui.hideError();
+  ui.setButtonLoading(btnTypeSubmit, true);
+  ui.hideError('session');
 
   try {
     const result = await api.submitTurn(
@@ -650,11 +673,13 @@ async function doSubmitTurn(answer, duration, delay) {
       state.currentQuestion.id,
       answer,
       duration,
-      delay
+      delay,
+      inputMode
     );
 
     state.submitting = false;
     ui.setButtonLoading(btnDone, false);
+    ui.setButtonLoading(btnTypeSubmit, false);
 
     // Show evaluation chip
     ui.showEvalChip(result.evaluation);
@@ -677,6 +702,7 @@ async function doSubmitTurn(answer, duration, delay) {
   } catch (err) {
     state.submitting = false;
     ui.setButtonLoading(btnDone, false);
+    ui.setButtonLoading(btnTypeSubmit, false);
 
     if (err.status === 502) {
       handleApiError(err, {
@@ -685,13 +711,13 @@ async function doSubmitTurn(answer, duration, delay) {
           ui.hideError('session');
           transition('thinking');
           ui.setPresenceState('thinking');
-          doSubmitTurn(state.pendingAnswer, state.pendingDuration, state.pendingDelay);
+          doSubmitTurn(state.pendingAnswer, state.pendingDuration, state.pendingDelay, state.pendingInputMode);
         },
       });
     } else if (err.status === 429) {
       handleApiError(err, {
         context: 'session',
-        onRetry: () => doSubmitTurn(answer, duration, delay),
+        onRetry: () => doSubmitTurn(answer, duration, delay, inputMode),
       });
     } else {
       handleApiError(err, { context: 'session' });

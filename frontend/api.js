@@ -183,9 +183,10 @@ export async function createSession(uploadId, level, numQuestions) {
  * @param {string} answer
  * @param {number} durationSec  seconds from first word to submission
  * @param {number|null} firstSpeechDelaySec  seconds from TTS end to first word
+ * @param {'voice'|'typed'} [inputMode='voice']
  * @returns {Promise<{evaluation, next}>}
  */
-export async function submitTurn(sessionId, questionId, answer, durationSec, firstSpeechDelaySec) {
+export async function submitTurn(sessionId, questionId, answer, durationSec, firstSpeechDelaySec, inputMode = 'voice') {
   if (MOCK_MODE) return MOCK_RESPONSES.turn(questionId);
   return apiJSON('/turn', {
     method: 'POST',
@@ -196,6 +197,7 @@ export async function submitTurn(sessionId, questionId, answer, durationSec, fir
       answer,
       duration_sec: durationSec,
       first_speech_delay_sec: firstSpeechDelaySec,
+      input_mode: inputMode,
     }),
   });
 }

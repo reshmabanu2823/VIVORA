@@ -286,7 +286,18 @@ export function showFeedback(data) {
   if (!screen) return;
 
   const s = data.summary;
-  const paceClass = s.avg_wpm < 100 ? 'pace--slow' : s.avg_wpm <= 160 ? 'pace--ok' : 'pace--fast';
+  const paceClass = s.avg_wpm == null ? '' : s.avg_wpm < 100 ? 'pace--slow' : s.avg_wpm <= 160 ? 'pace--ok' : 'pace--fast';
+
+  const paceVal = s.avg_wpm != null ? `${s.avg_wpm} wpm` : '-';
+  const paceSub = s.pace_note || '';
+
+  const fillersVal = s.fillers_per_minute != null ? `${s.fillers_per_minute}/min` : '-';
+  const fillersSub = s.fillers_per_minute != null
+    ? (s.filler_count != null ? `${s.filler_count} total` : '')
+    : (s.pace_note || '');
+
+  const delayVal = s.avg_first_speech_delay_sec != null ? `${s.avg_first_speech_delay_sec}s` : '-';
+  const delaySub = s.avg_first_speech_delay_sec != null ? '' : (s.pace_note || '');
 
   // Build summary cards
   const summaryEl = screen.querySelector('#feedback-summary');
@@ -297,18 +308,19 @@ export function showFeedback(data) {
         <span class="card-label">Questions answered</span>
       </div>
       <div class="summary-card">
-        <span class="card-value ${paceClass}">${s.avg_wpm != null ? s.avg_wpm + ' wpm' : '--'}</span>
+        <span class="card-value ${paceClass}">${paceVal}</span>
         <span class="card-label">Speaking pace</span>
-        <span class="card-sub">${s.pace_note || ''}</span>
+        <span class="card-sub">${paceSub}</span>
       </div>
       <div class="summary-card">
-        <span class="card-value">${s.filler_count ?? '--'}</span>
-        <span class="card-label">Filler words</span>
-        <span class="card-sub">${s.fillers_per_minute != null ? s.fillers_per_minute + '/min' : ''}</span>
+        <span class="card-value">${fillersVal}</span>
+        <span class="card-label">Fillers per minute</span>
+        <span class="card-sub">${fillersSub}</span>
       </div>
       <div class="summary-card">
-        <span class="card-value">${s.avg_first_speech_delay_sec != null ? s.avg_first_speech_delay_sec + 's' : '--'}</span>
+        <span class="card-value">${delayVal}</span>
         <span class="card-label">Avg. response delay</span>
+        <span class="card-sub">${delaySub}</span>
       </div>
     `;
   }
