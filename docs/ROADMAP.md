@@ -5,11 +5,11 @@
 | Milestone | Goal | Status |
 |-----------|------|--------|
 | M0 | Repo, specs, prompts documented | Done (this commit) |
-| M1 | Backend: upload + parsing + sectioning | Not started |
-| M2 | Backend: session + /turn with LLM | Not started |
+| M1 | Backend: upload + parsing + sectioning | Done (untested on real reports) |
+| M2 | Backend: session + /turn with LLM | Done (tested with mock LLM; test with a real key) |
 | M3 | Frontend: upload, level select, transcript UI | Not started |
 | M4 | Voice: STT + TTS + silence timer | Not started |
-| M5 | Feedback report + local speech metrics | Not started |
+| M5 | Feedback report + local speech metrics | Backend done; frontend pending |
 | M6 | Error handling, polish, deployment | Not started |
 | M7 | Evaluation run + report screenshots | Not started |
 

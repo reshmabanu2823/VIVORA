@@ -105,22 +105,19 @@ Do not state any part of the answer. Return only the sentence.
 
 ## 5. Feedback prompt
 
+The per-question verdicts, covered points and missed points are already stored from the evaluation step, so the
+feedback prompt only asks the model for the summary parts.
+
 ```
-Below is the full transcript of a practice viva, with the level used: {level}.
-For each question: the question, the section excerpt it came from, and the student's answer.
+Below is a practice viva transcript. Level used: {level}.
+Each item has the question, the student's answer, and the points the student covered and missed.
 
-{transcript_with_excerpts}
+{transcript}
 
-Produce a feedback report as ONLY valid JSON:
-{
-  "per_question": [
-    {"question": "...", "verdict": "strong|partial|weak", "covered": ["..."], "missed": ["..."]}
-  ],
-  "weak_topics": ["up to 3 topics"],
-  "suggestions": ["2 to 3 specific, practical suggestions for next practice"]
-}
+Produce a feedback summary as ONLY valid JSON:
+{"weak_topics": ["up to 3 topics"], "suggestions": ["2 to 3 specific, practical suggestions for next practice"]}
 
-Be honest but kind. Do not invent content that is not in the excerpts.
+Be honest but kind. Do not invent content that is not in the transcript.
 ```
 
 Filler-word counts and speaking pace are computed in code, not by the model.
