@@ -1,5 +1,5 @@
 /**
- * api.js — All fetch calls to the VIVORA backend.
+ * api.js — All fetch calls to the VIVORA backend (text-only mode).
  * Config: change API_BASE if your backend runs on a different port.
  * Mock mode: add ?mock=1 to the URL to use fake responses (no backend needed).
  */
@@ -60,17 +60,12 @@ const MOCK_RESPONSES = {
     };
   },
   nudge: (n) => ({
-    text: n >= 2 ? 'Take your time — start with what the section is about.' : 'Try beginning with the problem this part solves.',
-    offer_skip: n >= 3,
+    text: n >= 2 ? 'Consider explaining what the section aims to solve first.' : 'Try outlining the main design choice made here.',
+    offer_skip: n >= 2,
   }),
   feedback: {
     summary: {
       questions: 5,
-      avg_wpm: 132.4,
-      pace_note: 'comfortable range',
-      filler_count: 14,
-      fillers_per_minute: 3.2,
-      avg_first_speech_delay_sec: 2.1,
       level: 'normal',
     },
     per_question: MOCK_QUESTIONS.slice(0, 5).map((q, i) => ({
@@ -79,14 +74,12 @@ const MOCK_RESPONSES = {
       verdict: ['strong', 'partial', 'weak', 'strong', 'partial'][i],
       covered: ['main idea', 'system design'],
       missed: i % 2 ? ['performance data', 'comparison to alternatives'] : [],
-      wpm: 118 + i * 12,
-      fillers: { um: 2, basically: 1 },
     })),
     weak_topics: ['Methodology', 'Results analysis'],
     suggestions: [
-      'Quote specific numbers from your results when asked about performance.',
-      'Practise explaining why you chose your methodology over at least one alternative.',
-      'Try to pause and breathe before answering — your pace was good overall.',
+      'Include specific figures or metrics from your results when addressing evaluation questions.',
+      'Clearly justify why you chose your methodology over alternatives.',
+      'Highlight trade-offs and design constraints in your architecture.',
     ],
     disclaimer: 'Practice feedback only. It is not an official grade.',
   },
@@ -177,16 +170,14 @@ export async function createSession(uploadId, level, numQuestions) {
 }
 
 /**
- * Submit a student's answer for the current question.
+ * Submit a student's typed answer for the current question.
+ * Every POST /turn sends input_mode "typed", duration_sec 0 and first_speech_delay_sec null.
  * @param {string} sessionId
- * @param {number} questionId  Must match the current question's id.
+ * @param {number} questionId Must match the current question's id.
  * @param {string} answer
- * @param {number} durationSec  seconds from first word to submission
- * @param {number|null} firstSpeechDelaySec  seconds from TTS end to first word
- * @param {'voice'|'typed'} [inputMode='voice']
  * @returns {Promise<{evaluation, next}>}
  */
-export async function submitTurn(sessionId, questionId, answer, durationSec, firstSpeechDelaySec, inputMode = 'voice') {
+export async function submitTurn(sessionId, questionId, answer) {
   if (MOCK_MODE) return MOCK_RESPONSES.turn(questionId);
   return apiJSON('/turn', {
     method: 'POST',
@@ -195,18 +186,18 @@ export async function submitTurn(sessionId, questionId, answer, durationSec, fir
       session_id: sessionId,
       question_id: questionId,
       answer,
-      duration_sec: durationSec,
-      first_speech_delay_sec: firstSpeechDelaySec,
-      input_mode: inputMode,
+      duration_sec: 0,
+      first_speech_delay_sec: null,
+      input_mode: 'typed',
     }),
   });
 }
 
 /**
- * Request a nudge when the student has been silent.
+ * Request a hint when the student wants assistance.
  * @param {string} sessionId
  * @param {number} questionId
- * @param {number} nudgeNumber  1-indexed
+ * @param {number} nudgeNumber 1-indexed
  * @returns {Promise<{text: string, offer_skip: boolean}>}
  */
 export async function getNudge(sessionId, questionId, nudgeNumber) {

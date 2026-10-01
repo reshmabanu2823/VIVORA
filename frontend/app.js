@@ -1,101 +1,55 @@
 /**
- * app.js — VIVORA application entry point and state machine.
+ * app.js — VIVORA text-only application entry point and state machine.
  *
  * States:
- *   start      The upload / configuration screen
- *   uploading  File or text is being sent to /upload
- *   ready      Upload succeeded; student configures level & questions
- *   asking     TTS is speaking the examiner's question
- *   listening  Mic is on; student is answering
- *   thinking   POST /turn is in flight
- *   feedback   Session complete; feedback screen shown
- *   error      Unrecoverable error (session expired, etc.)
+ *   start      Upload / configuration screen
+ *   uploading  Document or text being parsed
+ *   ready      Ready to begin session
+ *   asking     Question presented, waiting for student's typed answer
+ *   thinking   POST /turn in flight ("Examiner is thinking...")
+ *   feedback   Session finished, feedback report displayed
+ *   error      Unrecoverable error state
  */
 
 import * as api from './api.js';
-import * as speech from './speech.js';
 import * as ui from './ui.js';
-
-// ── Auto-submit silence window (ms) ──────────────────────────────────────────
-// Change this constant to adjust how long after silence before auto-submitting.
-const AUTO_SUBMIT_MS = 2500;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const state = {
-  current: 'start',     // current FSM state
+  current: 'start',
 
   // Upload
   uploadId: null,
   sections: [],
 
-  // Session config (set before /session)
+  // Configuration
   level: 'normal',
   numQuestions: 5,
 
-  // Live session
+  // Active session
   sessionId: null,
-  currentQuestion: null,   // { id, text, section_id }
+  currentQuestion: null,
   questionNumber: 0,
-  silenceNudgeSec: 8,
   nudgeCount: 0,
-  nudgeTimer: null,
 
-  // Typing/mic mode
-  voiceMode: null,    // true = voice, false = typed-only
-
-  // Answer timing
-  ttsEndTime: null,
-  firstSpeechTime: null,
-  answerStartTime: null,
-
-  // Auto-submit
-  silenceTimer: null,
-  countdownTimer: null,
-
-  // Pending retry (for 502 errors)
-  pendingAnswer: null,
-  pendingDuration: null,
-  pendingDelay: null,
-
-  // Prevents double-submits
+  // Submission control
   submitting: false,
-
-  // Mic level stop function (for mic check)
-  stopMicLevel: null,
+  pendingAnswer: null,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── State transition helper ───────────────────────────────────────────────────
 
 function transition(newState) {
   console.debug(`[VIVORA] ${state.current} → ${newState}`);
   state.current = newState;
 }
 
-/** Cancel all timers cleanly. */
-function clearTimers() {
-  clearTimeout(state.silenceTimer);
-  clearTimeout(state.nudgeTimer);
-  clearInterval(state.countdownTimer);
-  state.silenceTimer = null;
-  state.nudgeTimer = null;
-  state.countdownTimer = null;
-  ui.updateCountdown(null);
-}
-
-/** Stop speech and recognition. */
-function cleanup() {
-  clearTimers();
-  speech.stopSpeaking();
-  speech.stopListening();
-  state.submitting = false;
-}
-
-/** Handle API errors with appropriate UX. */
+/** Handle API errors with friendly, accessible UX. */
 function handleApiError(err, { onRetry, context = 'start' } = {}) {
   const status = err.status || 0;
 
   if (status === 429) {
-    ui.showToast('Slow down a little. Retrying in 3 seconds...');
+    ui.showToast('Please wait a moment before sending again.');
     if (onRetry) setTimeout(onRetry, 3000);
     return;
   }
@@ -130,7 +84,7 @@ function handleApiError(err, { onRetry, context = 'start' } = {}) {
 function initStartScreen() {
   transition('start');
   ui.showScreen('start');
-  ui.hideError();
+  ui.hideError('start');
   ui.hideSections();
 
   const fileInput = document.getElementById('file-input');
@@ -141,7 +95,6 @@ function initStartScreen() {
   const pastePanel = document.getElementById('panel-paste');
   const pasteArea = document.getElementById('paste-area');
   const btnStart = document.getElementById('btn-start');
-  const btnMicCheck = document.getElementById('btn-mic-check');
   const levelCards = document.querySelectorAll('.level-card');
   const questionsStepper = document.getElementById('questions-count');
 
@@ -164,7 +117,12 @@ function initStartScreen() {
       card.setAttribute('aria-pressed', 'true');
       state.level = card.dataset.level;
     });
-    card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); } });
+    card.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        card.click();
+      }
+    });
   });
 
   // Questions stepper
@@ -175,7 +133,7 @@ function initStartScreen() {
     });
   }
 
-  // Drop zone
+  // File drop zone
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drop-zone--hover'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drop-zone--hover'));
   dropZone.addEventListener('drop', e => {
@@ -185,7 +143,12 @@ function initStartScreen() {
     if (file) handleFileSelected(file);
   });
   dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  dropZone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fileInput.click();
+    }
+  });
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) handleFileSelected(fileInput.files[0]);
   });
@@ -195,27 +158,10 @@ function initStartScreen() {
     const words = pasteArea.value.trim().split(/\s+/).filter(Boolean).length;
     btnStart.disabled = words < 60;
     if (words >= 60) {
-      state.uploadId = null; // will upload on start
+      state.uploadId = null;
       btnStart.disabled = false;
     }
   });
-
-  // Mic check
-  const btnMicCheckClose = document.getElementById('btn-mic-check-close');
-  if (btnMicCheckClose) {
-    btnMicCheckClose.addEventListener('click', () => {
-      if (state.stopMicLevel) { state.stopMicLevel(); state.stopMicLevel = null; }
-      ui.showMicCheckOverlay(false);
-    });
-  }
-
-  if (btnMicCheck) {
-    if (!speech.isVoiceAvailable()) {
-      btnMicCheck.hidden = true;
-    } else {
-      btnMicCheck.addEventListener('click', runMicCheck);
-    }
-  }
 
   // Start button
   btnStart.addEventListener('click', handleStart);
@@ -225,18 +171,17 @@ async function handleFileSelected(file) {
   const btnStart = document.getElementById('btn-start');
   const dropLabel = document.getElementById('drop-label');
 
-  // Validate type
   const name = file.name.toLowerCase();
   if (!name.endsWith('.pdf') && !name.endsWith('.docx')) {
-    ui.showError('Please upload a .pdf or .docx file. Text files (.txt) are not supported \u2014 paste the text instead.');
+    ui.showError('Please upload a .pdf or .docx file. Text files (.txt) are not supported \u2014 paste the text instead.', { context: 'start' });
     return;
   }
   if (file.size > 10 * 1024 * 1024) {
-    ui.showError('File too large. Maximum size is 10 MB.');
+    ui.showError('File too large. Maximum size is 10 MB.', { context: 'start' });
     return;
   }
 
-  ui.hideError();
+  ui.hideError('start');
   transition('uploading');
   if (dropLabel) dropLabel.textContent = `Uploading ${file.name}...`;
   btnStart.disabled = true;
@@ -252,7 +197,7 @@ async function handleFileSelected(file) {
     transition('ready');
   } catch (err) {
     if (dropLabel) dropLabel.textContent = 'Upload failed. Try again or paste text.';
-    handleApiError(err);
+    handleApiError(err, { context: 'start' });
     transition('start');
   }
 }
@@ -262,11 +207,10 @@ async function handleStart() {
   const pasteArea = document.getElementById('paste-area');
   const pastePanel = document.getElementById('panel-paste');
 
-  ui.hideError();
+  ui.hideError('start');
   ui.setButtonLoading(btnStart, true);
 
   try {
-    // If no file uploaded yet, upload the pasted text
     if (!state.uploadId) {
       if (pastePanel && !pastePanel.hidden) {
         const text = pasteArea.value.trim();
@@ -286,18 +230,12 @@ async function handleStart() {
       }
     }
 
-    // Determine voice mode
-    state.voiceMode = speech.isVoiceAvailable();
-
-    // Create session
     const session = await api.createSession(state.uploadId, state.level, state.numQuestions);
     state.sessionId = session.session_id;
     state.currentQuestion = session.question;
     state.questionNumber = 1;
-    state.silenceNudgeSec = session.silence_nudge_seconds || 8;
     state.nudgeCount = 0;
 
-    // Start session screen
     startSessionScreen();
   } catch (err) {
     handleApiError(err, { context: 'start' });
@@ -306,403 +244,197 @@ async function handleStart() {
   }
 }
 
-// ── Mic check ──────────────────────────────────────────────────────────────────
-
-async function runMicCheck() {
-  const overlay = document.getElementById('mic-check-overlay');
-  const meter = document.getElementById('mic-meter-fill');
-  const btnClose = document.getElementById('btn-mic-check-close');
-
-  ui.showMicCheckOverlay(true);
-
-  const granted = await speech.checkMicPermission();
-  if (!granted) {
-    ui.showMicCheckOverlay(false);
-    ui.showToast('Microphone access was denied. You can still type your answers.');
-    state.voiceMode = false;
-    return;
-  }
-
-  // Show live level meter for 5 seconds
-  const stopLevel = await speech.getMicLevel((level) => {
-    if (meter) meter.style.width = `${Math.round(level * 100)}%`;
-  });
-
-  state.stopMicLevel = stopLevel;
-
-  const closeCheck = () => {
-    if (state.stopMicLevel) { state.stopMicLevel(); state.stopMicLevel = null; }
-    ui.showMicCheckOverlay(false);
-  };
-
-  if (btnClose) btnClose.onclick = closeCheck;
-  setTimeout(closeCheck, 6000);
-}
-
 // ── Session screen ─────────────────────────────────────────────────────────────
 
 function startSessionScreen() {
   ui.showScreen('session');
-  ui.clearTranscript();
   ui.hideEvalChip();
   ui.hideNudge();
-  ui.hideError();
+  ui.hideError('session');
 
-  // Show voice unavailable banner if needed
-  if (!state.voiceMode) {
-    ui.showToast("Voice isn't available here, so you can type your answers. Chrome works best for voice.");
-    ui.showTypingFallback(true);
-  } else {
-    ui.showTypingFallback(false);
-  }
-
-  // Wire up session controls
   wireSessionControls();
-
-  // Speak first question
   askCurrentQuestion(null);
 }
 
 function wireSessionControls() {
   // End session
   document.getElementById('btn-end-session')?.addEventListener('click', () => {
-    if (confirm('End the practice session now? You can still see your feedback.')) {
+    if (confirm('End the practice session now? You can still view your feedback summary.')) {
       endSession();
     }
   });
 
-  // Done answering (voice)
-  document.getElementById('btn-done')?.addEventListener('click', () => {
-    if (state.current === 'listening') submitAnswer('voice');
-  });
+  // Textarea Ctrl+Enter submission
+  const answerTextarea = document.getElementById('answer-text');
+  if (answerTextarea) {
+    answerTextarea.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (state.current === 'asking' && !state.submitting) {
+          submitAnswer();
+        }
+      }
+    });
+  }
 
-  // Repeat question (voice controls)
-  document.getElementById('btn-repeat')?.addEventListener('click', () => {
-    if (state.current === 'listening' || state.current === 'asking') {
-      clearTimers();
-      speech.stopSpeaking();
-      speakQuestion(state.currentQuestion.text, () => beginListening());
+  // Submit button
+  document.getElementById('btn-submit-answer')?.addEventListener('click', () => {
+    if (state.current === 'asking' && !state.submitting) {
+      submitAnswer();
     }
   });
 
-  // Repeat question (typing panel)
-  document.getElementById('btn-repeat-type')?.addEventListener('click', () => {
-    if (state.currentQuestion) {
-      ui.showQuestion(state.currentQuestion.text);
+  // Give me a hint
+  document.getElementById('btn-hint')?.addEventListener('click', handleHintRequest);
+
+  // Skip question
+  document.getElementById('btn-skip')?.addEventListener('click', () => {
+    if (state.current === 'asking' && !state.submitting) {
+      const ta = document.getElementById('answer-text');
+      if (ta) ta.value = '';
+      submitAnswer('(skipped)');
     }
   });
-
-  // Type instead
-  document.getElementById('btn-type-instead')?.addEventListener('click', () => {
-    ui.showTypingFallback(true);
-    speech.stopListening();
-    clearTimers();
-    setListeningControls(false);
-  });
-
-  // Mic toggle
-  document.getElementById('btn-mic')?.addEventListener('click', toggleMic);
-
-  // Typing panel submit (typed)
-  document.getElementById('btn-type-submit')?.addEventListener('click', () => {
-    submitAnswer('typed');
-  });
-
-  // Skip button (wired dynamically in showNudgeActions)
 }
 
 function askCurrentQuestion(questionType) {
   transition('asking');
-  clearTimers();
-  ui.clearTranscript();
+  state.submitting = false;
+  state.nudgeCount = 0;
+
   ui.hideEvalChip();
   ui.hideNudge();
-  ui.hideError();
-  state.nudgeCount = 0;
-  state.firstSpeechTime = null;
-  state.answerStartTime = null;
+  ui.hideError('session');
+  ui.setPresenceState('idle');
 
-  setListeningControls(false);
+  // Reset hint button
+  resetHintButton();
+
+  // Update progress and question
   ui.setProgress(state.questionNumber, state.numQuestions, state.level);
   ui.showQuestion(state.currentQuestion.text, questionType);
-  ui.setPresenceState('speaking');
 
-  if (state.voiceMode) {
-    speakQuestion(state.currentQuestion.text, () => {
-      state.ttsEndTime = Date.now();
-      beginListening();
-    });
-  } else {
-    // Typed mode: just show the question and open the typing panel
-    state.ttsEndTime = Date.now();
-    ui.showTypingFallback(true);
-    setListeningControls(true);
-    transition('listening');
-    ui.setPresenceState('listening');
+  // Clear and focus textarea
+  const ta = document.getElementById('answer-text');
+  if (ta) {
+    ta.value = '';
+    ta.disabled = false;
+    ta.focus();
   }
+
+  setSessionButtonsDisabled(false);
 }
 
-function speakQuestion(text, onEnd) {
-  speech.speak(text, {
-    onEnd,
-    onError: () => {
-      // TTS failed silently — continue
-      onEnd && onEnd();
-    },
-  });
-}
+async function handleHintRequest() {
+  const btnHint = document.getElementById('btn-hint');
+  if (btnHint && btnHint.dataset.isSkip === 'true') {
+    // If transformed into skip, execute skip
+    submitAnswer('(skipped)');
+    return;
+  }
 
-function beginListening() {
-  transition('listening');
-  ui.setPresenceState('listening');
-  setListeningControls(true);
-  ui.setMicActive(true);
-
-  startNudgeTimer();
-
-  if (!state.voiceMode) return;
-
-  let hasSpeech = false;
-
-  speech.startListening({
-    onSpeechStart: () => {
-      if (!state.firstSpeechTime) {
-        state.firstSpeechTime = Date.now();
-        state.answerStartTime = Date.now();
-      }
-      // Reset silence timers when speech resumes
-      clearTimers();
-      startNudgeTimer();
-      hasSpeech = true;
-    },
-    onInterim: (text) => {
-      ui.appendTranscript(text, false);
-      // Cancel auto-submit while still talking
-      clearTimeout(state.silenceTimer);
-      clearInterval(state.countdownTimer);
-      ui.updateCountdown(null);
-    },
-    onFinal: (text) => {
-      ui.appendTranscript(text, true);
-      // Enforce 6000 char limit
-      const current = ui.getFinalTranscript ? ui.getFinalTranscript() : '';
-      if (current.length >= 5800) {
-        submitAnswer();
-        return;
-      }
-      // Start silence window for auto-submit
-      startSilenceAutoSubmit();
-    },
-    onEnd: () => {
-      // Recognition ended (Chrome auto-stop) — already handled via _shouldRestart
-    },
-    onError: (err) => {
-      if (err === 'not-allowed' || err === 'permission-denied') {
-        state.voiceMode = false;
-        speech.stopListening();
-        ui.showTypingFallback(true);
-        ui.showToast("Microphone access was denied. Switching to typed answers.");
-      }
-    },
-  });
-}
-
-function startNudgeTimer() {
-  clearTimeout(state.nudgeTimer);
-  state.nudgeTimer = setTimeout(triggerNudge, state.silenceNudgeSec * 1000);
-}
-
-async function triggerNudge() {
-  if (state.current !== 'listening') return;
   state.nudgeCount += 1;
+  ui.setButtonLoading(btnHint, true);
 
   try {
     const nudge = await api.getNudge(state.sessionId, state.currentQuestion.id, state.nudgeCount);
     ui.showNudge(nudge.text);
-    if (state.voiceMode) {
-      speech.stopListening();
-      speech.speak(nudge.text, {
-        onEnd: () => {
-          if (nudge.offer_skip) {
-            ui.showNudgeActions(
-              () => {
-                // Rephrase: re-speak the question
-                ui.hideNudge();
-                speakQuestion(state.currentQuestion.text, () => beginListening());
-              },
-              () => {
-                // Skip: submit "(skipped)"
-                ui.setFinalTranscript('(skipped)');
-                submitAnswer();
-              }
-            );
-          } else {
-            beginListening();
-            startNudgeTimer();
-          }
-        },
-      });
-    } else {
-      if (nudge.offer_skip) {
-        ui.showNudgeActions(
-          () => { ui.hideNudge(); },
-          () => { ui.setFinalTranscript('(skipped)'); submitAnswer(); }
-        );
-      } else {
-        startNudgeTimer();
+
+    if (nudge.offer_skip) {
+      // When offer_skip is true, replace the button with "Skip"
+      if (btnHint) {
+        btnHint.textContent = 'Skip';
+        btnHint.dataset.isSkip = 'true';
+        btnHint.classList.remove('btn--secondary');
+        btnHint.classList.add('btn--ghost');
       }
     }
-  } catch (_) {
-    // Ignore nudge failures silently
-    startNudgeTimer();
+  } catch (err) {
+    handleApiError(err, { context: 'session' });
+  } finally {
+    ui.setButtonLoading(btnHint, false);
   }
 }
 
-function startSilenceAutoSubmit() {
-  clearTimeout(state.silenceTimer);
-  clearInterval(state.countdownTimer);
-  ui.updateCountdown(null);
-
-  // Show countdown only in the last 1 second
-  const countdownStartMs = AUTO_SUBMIT_MS - 1000;
-
-  state.silenceTimer = setTimeout(() => {
-    // Auto-submit
-    submitAnswer('voice');
-  }, AUTO_SUBMIT_MS);
-
-  // Countdown display
-  const countdownAt = Math.floor(AUTO_SUBMIT_MS / 1000);
-  if (countdownAt >= 1) {
-    state.countdownTimer = setInterval(() => {
-      const remaining = Math.ceil((state.silenceTimer ? AUTO_SUBMIT_MS : 0) / 1000);
-      if (remaining <= 1) {
-        ui.updateCountdown(1);
-      }
-    }, 500);
-
-    // Show "Sending in 1..." only at the last second
-    setTimeout(() => {
-      if (state.current === 'listening') ui.updateCountdown(1);
-    }, countdownStartMs > 0 ? countdownStartMs : 0);
+function resetHintButton() {
+  const btnHint = document.getElementById('btn-hint');
+  if (btnHint) {
+    btnHint.textContent = 'Give me a hint';
+    btnHint.dataset.isSkip = 'false';
+    btnHint.classList.remove('btn--ghost');
+    btnHint.classList.add('btn--secondary');
   }
 }
 
-async function submitAnswer(explicitMode = null) {
+async function submitAnswer(overrideText = null) {
   if (state.submitting) return;
-  if (state.current !== 'listening') return;
   state.submitting = true;
 
-  clearTimers();
-  speech.stopListening();
-  ui.updateCountdown(null);
-  ui.setMicActive(false);
-  setListeningControls(false);
+  const ta = document.getElementById('answer-text');
+  let answerText = overrideText !== null ? overrideText : (ta ? ta.value.trim() : '');
 
-  // Determine inputMode
-  const isTypingPanelOpen = document.getElementById('typing-panel') && !document.getElementById('typing-panel').hidden;
-  const inputMode = explicitMode || (isTypingPanelOpen || state.voiceMode === false ? 'typed' : 'voice');
-
-  // Get answer text
-  let answerText = '';
-  if (inputMode === 'typed') {
-    const ta = document.getElementById('type-answer');
-    if (ta && ta.value.trim()) {
-      answerText = ta.value.trim();
-      ta.value = '';
-    } else {
-      answerText = (ui.getFinalTranscript ? ui.getFinalTranscript() : '') || '';
-    }
-  } else {
-    answerText = (ui.getFinalTranscript ? ui.getFinalTranscript() : '') || '';
-  }
-
-  // Confirm if empty
-  if (!answerText.trim()) {
+  // Confirm if blank
+  if (!answerText) {
     if (!confirm('Submit without an answer?')) {
       state.submitting = false;
-      beginListening();
+      if (ta) ta.focus();
       return;
     }
+    answerText = '(no answer given)';
   }
 
-  // Calculate timings based on inputMode:
-  // 1. When the student submits a typed answer, send input_mode "typed", duration_sec 0 and first_speech_delay_sec null.
-  // 2. For spoken answers send input_mode "voice" as before.
-  let duration = 0;
-  let firstSpeechDelay = null;
+  if (ta) ta.disabled = true;
+  setSessionButtonsDisabled(true);
 
-  if (inputMode === 'voice') {
-    const now = Date.now();
-    firstSpeechDelay = state.firstSpeechTime && state.ttsEndTime
-      ? Math.max(0, (state.firstSpeechTime - state.ttsEndTime) / 1000)
-      : null;
-    duration = state.answerStartTime
-      ? Math.max(0, (now - state.answerStartTime) / 1000)
-      : 0;
-  } else {
-    duration = 0;
-    firstSpeechDelay = null;
-  }
-
-  // Store for potential 502 retry
   state.pendingAnswer = answerText;
-  state.pendingDuration = duration;
-  state.pendingDelay = firstSpeechDelay;
-  state.pendingInputMode = inputMode;
 
-  // Add to history
-  ui.addHistoryTurn(state.currentQuestion.text, answerText || '(no answer)', 'partial');
+  // Add turn to history list
+  ui.addHistoryTurn(state.currentQuestion.text, answerText, 'partial');
 
   transition('thinking');
   ui.setPresenceState('thinking');
 
-  await doSubmitTurn(answerText, duration, firstSpeechDelay, inputMode);
+  await doSubmitTurn(answerText);
 }
 
-async function doSubmitTurn(answer, duration, delay, inputMode = 'voice') {
-  const btnDone = document.getElementById('btn-done');
-  const btnTypeSubmit = document.getElementById('btn-type-submit');
-  ui.setButtonLoading(btnDone, true);
-  ui.setButtonLoading(btnTypeSubmit, true);
+async function doSubmitTurn(answer) {
+  const btnSubmit = document.getElementById('btn-submit-answer');
+  ui.setButtonLoading(btnSubmit, true);
   ui.hideError('session');
 
   try {
     const result = await api.submitTurn(
       state.sessionId,
       state.currentQuestion.id,
-      answer,
-      duration,
-      delay,
-      inputMode
+      answer
     );
 
     state.submitting = false;
-    ui.setButtonLoading(btnDone, false);
-    ui.setButtonLoading(btnTypeSubmit, false);
+    ui.setButtonLoading(btnSubmit, false);
 
     // Show evaluation chip
     ui.showEvalChip(result.evaluation);
 
     if (result.next.type === 'end') {
-      // Session complete
       await endSession();
     } else {
-      // Move to next question
       state.questionNumber += 1;
       state.currentQuestion = result.next.question;
       state.pendingAnswer = null;
 
-      // Short pause before next question
       setTimeout(() => {
         ui.hideEvalChip();
         askCurrentQuestion(result.next.type);
-      }, 2500);
+      }, 1800);
     }
   } catch (err) {
     state.submitting = false;
-    ui.setButtonLoading(btnDone, false);
-    ui.setButtonLoading(btnTypeSubmit, false);
+    ui.setButtonLoading(btnSubmit, false);
+    ui.setPresenceState('idle');
+
+    const ta = document.getElementById('answer-text');
+    if (ta) ta.disabled = false;
+    setSessionButtonsDisabled(false);
 
     if (err.status === 502) {
       handleApiError(err, {
@@ -711,59 +443,33 @@ async function doSubmitTurn(answer, duration, delay, inputMode = 'voice') {
           ui.hideError('session');
           transition('thinking');
           ui.setPresenceState('thinking');
-          doSubmitTurn(state.pendingAnswer, state.pendingDuration, state.pendingDelay, state.pendingInputMode);
+          doSubmitTurn(state.pendingAnswer);
         },
       });
     } else if (err.status === 429) {
       handleApiError(err, {
         context: 'session',
-        onRetry: () => doSubmitTurn(answer, duration, delay, inputMode),
+        onRetry: () => doSubmitTurn(answer),
       });
     } else {
       handleApiError(err, { context: 'session' });
-      // Allow retry via listening
-      setTimeout(() => {
-        if (state.current === 'thinking') {
-          transition('listening');
-          ui.setPresenceState('listening');
-          beginListening();
-        }
-      }, 4000);
     }
   }
 }
 
-function setListeningControls(enabled) {
-  const btnDone = document.getElementById('btn-done');
-  const btnRepeat = document.getElementById('btn-repeat');
-  const btnTypeInstead = document.getElementById('btn-type-instead');
-  const btnMic = document.getElementById('btn-mic');
+function setSessionButtonsDisabled(disabled) {
+  const btnSubmit = document.getElementById('btn-submit-answer');
+  const btnHint = document.getElementById('btn-hint');
+  const btnSkip = document.getElementById('btn-skip');
 
-  if (btnDone) btnDone.disabled = !enabled;
-  if (btnRepeat) btnRepeat.disabled = !enabled && state.current !== 'asking';
-  if (btnTypeInstead) btnTypeInstead.disabled = !enabled;
-  if (btnMic) btnMic.disabled = !enabled;
-}
-
-function toggleMic() {
-  if (state.current !== 'listening') return;
-  // Simple mute/unmute toggle
-  const btn = document.getElementById('btn-mic');
-  const isActive = btn?.classList.contains('mic--active');
-  if (isActive) {
-    speech.stopListening();
-    ui.setMicActive(false);
-    clearTimers();
-  } else {
-    ui.setMicActive(true);
-    beginListening();
-  }
+  if (btnSubmit) btnSubmit.disabled = disabled;
+  if (btnHint) btnHint.disabled = disabled;
+  if (btnSkip) btnSkip.disabled = disabled;
 }
 
 // ── End session / feedback ─────────────────────────────────────────────────────
 
 async function endSession() {
-  cleanup();
   transition('feedback');
   ui.setPresenceState('idle');
 
@@ -794,28 +500,26 @@ function wireFeedbackControls() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (_) {
-      ui.showToast('Could not download transcript. Try again.');
+      ui.showToast('Could not download transcript. Please try again.');
     } finally {
       ui.setButtonLoading(btn, false);
     }
   });
 
   // Practise again
-  document.getElementById('btn-practise-again')?.addEventListener('click', startOver);
+  document.getElementById('btn-practise-again')?.addEventListener('click', () => startOver(false));
 
   // Try another level
   document.getElementById('btn-try-level')?.addEventListener('click', () => {
-    // Reset only the session, keep the upload
     state.sessionId = null;
     state.currentQuestion = null;
     state.questionNumber = 0;
     state.submitting = false;
-    startOver(true); // keepUpload=true
+    startOver(true);
   });
 }
 
 function startOver(keepUpload = false) {
-  cleanup();
   if (!keepUpload) {
     state.uploadId = null;
     state.sections = [];
@@ -824,41 +528,31 @@ function startOver(keepUpload = false) {
   state.currentQuestion = null;
   state.questionNumber = 0;
   state.submitting = false;
-  state.voiceMode = null;
 
-  // Re-init the start screen
   initStartScreen();
 
   if (keepUpload && state.uploadId) {
     ui.showSections(state.sections);
-    document.getElementById('btn-start').disabled = false;
+    const btnStart = document.getElementById('btn-start');
+    if (btnStart) btnStart.disabled = false;
   }
 }
 
-// ── Page visibility & unload ───────────────────────────────────────────────────
-
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    speech.stopSpeaking();
-    speech.stopListening();
-  }
-});
+// ── Unload safety ─────────────────────────────────────────────────────────────
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.current === 'listening' || state.current === 'asking' || state.current === 'thinking') {
+  if (state.current === 'asking' || state.current === 'thinking') {
     e.preventDefault();
     e.returnValue = '';
   }
-  cleanup();
 });
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Set default level card selection
   document.querySelector('.level-card[data-level="normal"]')?.classList.add('level-card--selected');
   document.querySelector('.level-card[data-level="normal"]')?.setAttribute('aria-pressed', 'true');
 
   initStartScreen();
-  console.info('[VIVORA] App ready. State machine initialised.');
+  console.info('[VIVORA] Text-only application initialised.');
 });

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VIVORA — Practice your viva</title>
-  <meta name="description" content="A calm, private place to practise your project viva with an AI examiner." />
+  <meta name="description" content="An AI examiner that questions you on your own project report." />
 
   <!-- Fonts: Lora (serif, headings/questions) + Inter (sans, UI) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -31,7 +31,7 @@
       <!-- Header -->
       <header class="start-header">
         <h1>VIVORA</h1>
-        <p class="start-subtitle">An AI examiner that helps you practise your project viva.</p>
+        <p class="start-subtitle">An AI examiner that questions you on your own project report.</p>
         <span class="start-note">A private place to practise. Not an official grade.</span>
       </header>
 
@@ -176,9 +176,6 @@
           <button id="btn-start" class="btn btn--primary btn--lg" disabled data-loading-text="Starting...">
             Start practice
           </button>
-          <button id="btn-mic-check" class="btn btn--secondary btn--sm">
-            Check microphone
-          </button>
         </div>
         <p class="privacy-note">
           Your report is used only for this session. Do not upload confidential material.
@@ -186,19 +183,6 @@
       </div>
 
     </div><!-- /container -->
-
-    <!-- Mic check overlay -->
-    <div id="mic-check-overlay" class="mic-check-overlay" hidden role="dialog" aria-labelledby="mic-check-title" aria-modal="true">
-      <div class="mic-check-card">
-        <h3 id="mic-check-title">Microphone check</h3>
-        <p>Speak a few words and watch the level meter.</p>
-        <div class="mic-meter-track" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100">
-          <div id="mic-meter-fill" class="mic-meter-fill"></div>
-        </div>
-        <button id="btn-mic-check-close" class="btn btn--secondary">Done</button>
-      </div>
-    </div>
-
   </main>
 
   <!-- ═══════════════════════════════════════════════════════════
@@ -215,21 +199,15 @@
 
     <div class="session-body">
 
-      <!-- Examiner presence -->
-      <div class="presence-wrapper" aria-live="polite">
-        <div
-          id="presence"
-          class="presence presence--idle"
-          role="img"
-          aria-label="Examiner is ready"
-        ></div>
-        <span id="presence-label" class="presence-label">Ready</span>
+      <!-- Examiner status label -->
+      <div class="examiner-status-wrapper">
+        <span id="presence-label" class="presence-label" aria-live="polite"></span>
       </div>
 
       <!-- Current question -->
       <div class="question-area" aria-live="polite">
         <span id="question-type-badge" class="question-type-badge" hidden></span>
-        <p id="question-text" class=""></p>
+        <h2 id="question-text" class="question-text"></h2>
       </div>
 
       <!-- Error (session-level) -->
@@ -238,82 +216,39 @@
         <button id="btn-retry-session-error" class="btn btn--sm btn--secondary" hidden>Retry</button>
       </div>
 
-      <!-- Nudge box -->
-      <div id="nudge-box" hidden aria-live="polite" style="width:100%">
-        <p id="nudge-text"></p>
-        <div id="nudge-actions" hidden>
-          <button id="btn-rephrase" class="btn btn--secondary btn--sm">Rephrase question</button>
-          <button id="btn-skip" class="btn btn--ghost btn--sm">Skip this question</button>
-        </div>
-      </div>
-
-      <!-- Live transcript -->
-      <div class="transcript-panel">
-        <p class="transcript-heading">Your answer</p>
-        <div
-          id="live-transcript"
-          class="live-transcript"
-          role="log"
-          aria-live="polite"
-          aria-label="Live transcript of your answer"
-        >
-          <span class="transcript-final"></span><span class="transcript-interim"></span>
-        </div>
-        <p id="countdown-hint" class="countdown-hint" hidden aria-live="assertive"></p>
+      <!-- Nudge / hint box -->
+      <div id="nudge-box" class="nudge-box card" hidden aria-live="polite" style="width:100%">
+        <span class="nudge-label">Hint</span>
+        <p id="nudge-text" class="nudge-text"></p>
       </div>
 
       <!-- Evaluation chip -->
       <div id="eval-chip" class="eval-chip" hidden aria-live="polite"></div>
 
-      <!-- Controls -->
-      <div class="controls">
-
-        <!-- Voice controls -->
-        <div id="voice-controls" class="voice-controls">
-          <button
-            id="btn-mic"
-            class="mic--active"
-            aria-pressed="true"
-            title="Mute microphone"
-            aria-label="Mute microphone"
-          >&#127908;</button>
-
-          <button id="btn-done" class="btn btn--primary" disabled data-loading-text="Sending...">
-            I'm done answering
-          </button>
-
-          <button id="btn-repeat" class="btn btn--secondary btn--sm" disabled>
-            Repeat question
-          </button>
-
-          <button id="btn-type-instead" class="btn btn--ghost btn--sm" disabled>
-            Type instead
-          </button>
-        </div>
-
-        <!-- Typing panel (shown when voice unavailable or "Type instead" clicked) -->
-        <div id="typing-panel" class="typing-panel" hidden>
-          <div class="typing-notice">
-            Voice is not available in this browser. Type your answer below.
-            Chrome works best for voice.
-          </div>
-          <label for="type-answer" class="sr-only">Type your answer</label>
-          <textarea
-            id="type-answer"
-            rows="4"
-            placeholder="Type your answer here..."
-            maxlength="6000"
-          ></textarea>
-          <div class="typing-actions">
-            <button id="btn-type-submit" class="btn btn--primary" data-loading-text="Sending...">
+      <!-- Answer input area -->
+      <div class="answer-panel card">
+        <label for="answer-text" class="answer-label">Your answer</label>
+        <textarea
+          id="answer-text"
+          rows="6"
+          placeholder="Type your answer here... (Press Ctrl+Enter to submit)"
+          maxlength="6000"
+          aria-describedby="answer-shortcut-hint"
+        ></textarea>
+        <div class="answer-footer">
+          <span id="answer-shortcut-hint" class="shortcut-hint">Ctrl+Enter to submit</span>
+          <div class="answer-actions">
+            <button id="btn-hint" class="btn btn--secondary btn--sm">
+              Give me a hint
+            </button>
+            <button id="btn-skip" class="btn btn--ghost btn--sm">
+              Skip question
+            </button>
+            <button id="btn-submit-answer" class="btn btn--primary" data-loading-text="Thinking...">
               Submit answer
             </button>
-            <button id="btn-repeat-type" class="btn btn--secondary btn--sm">
-              Repeat question
-            </button>
           </div>
         </div>
-
       </div>
 
       <!-- Collapsible answer history -->
@@ -342,7 +277,6 @@
       <section aria-labelledby="summary-heading">
         <h2 id="summary-heading" class="sr-only">Session summary</h2>
         <div id="feedback-summary"></div>
-        <p class="feedback-voice-note">Pace and delay are measured on spoken answers only</p>
       </section>
 
       <!-- Per-question breakdown -->

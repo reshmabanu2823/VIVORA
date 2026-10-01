@@ -1,30 +1,23 @@
 /**
- * ui.js — DOM rendering helpers for VIVORA.
+ * ui.js — DOM rendering helpers for VIVORA (text-only mode).
  *
  * Exports:
  *   showScreen(name)                  show one of: 'start' | 'session' | 'feedback'
- *   setPresenceState(state, label?)   'idle' | 'speaking' | 'listening' | 'thinking'
+ *   setPresenceState(state)           'idle' | 'thinking'
  *   showQuestion(text, type?)         show question in large serif; type = 'new_topic' | 'followup' | null
- *   appendTranscript(text, final)     add text to live transcript
- *   clearTranscript()                 clear live transcript
  *   addHistoryTurn(q, a, verdict)     add past Q+A to collapsible history
  *   showEvalChip(evaluation)          show verdict chip after an answer
  *   hideEvalChip()                    dismiss the chip
- *   showNudge(text)                   show a gentle nudge from the examiner
+ *   showNudge(text)                   show hint from the examiner
  *   hideNudge()
- *   showNudgeActions(onRephrase, onSkip)   show Rephrase / Skip buttons
- *   hideNudgeActions()
- *   setProgress(current, total, level)   update top bar
+ *   setProgress(current, total, level) update top bar
  *   showSections(sections)            render section list after upload
  *   hideSections()
- *   showFeedback(data)                render entire feedback screen
- *   showError(message, { onRetry })   show inline error
- *   hideError()
+ *   showFeedback(data)                render feedback screen (questions answered, verdicts, weak topics, suggestions)
+ *   showError(message, { onRetry, context }) show inline error
+ *   hideError(context)
  *   setButtonLoading(btn, loading)    toggle loading state on a button
  *   showToast(message)                ephemeral toast notification
- *   updateCountdown(secs)             show/hide the auto-submit countdown
- *   setMicActive(active)              update mic button appearance
- *   showTypingFallback(show)          show/hide the type-instead panel
  */
 
 // ── Screen switching ──────────────────────────────────────────────────────────
@@ -37,7 +30,6 @@ export function showScreen(name) {
   document.querySelectorAll('.screen').forEach(el => {
     el.hidden = el.dataset.screen !== name;
   });
-  // Update ARIA live region
   const liveRegion = document.getElementById('aria-live');
   if (liveRegion) {
     const labels = { start: 'Start screen', session: 'Practice session', feedback: 'Feedback screen' };
@@ -45,32 +37,22 @@ export function showScreen(name) {
   }
 }
 
-// ── Presence state ────────────────────────────────────────────────────────────
-
-const PRESENCE_LABELS = {
-  idle:      'Ready',
-  speaking:  'Examiner is speaking',
-  listening: 'Your turn to speak',
-  thinking:  'Thinking...',
-};
+// ── Examiner status ───────────────────────────────────────────────────────────
 
 /**
- * Set the animated examiner presence circle state.
- * @param {'idle'|'speaking'|'listening'|'thinking'} state
- * @param {string} [label] Override the default state label
+ * Set examiner state: 'thinking' -> "Examiner is thinking...", 'idle' -> hidden / calm.
+ * @param {'idle'|'thinking'} state
  */
-export function setPresenceState(state, label) {
-  const presence = document.getElementById('presence');
+export function setPresenceState(state) {
   const presenceLabel = document.getElementById('presence-label');
-  if (!presence) return;
+  if (!presenceLabel) return;
 
-  // Remove all state classes
-  presence.classList.remove('presence--idle', 'presence--speaking', 'presence--listening', 'presence--thinking');
-  presence.classList.add(`presence--${state}`);
-  presence.setAttribute('aria-label', label || PRESENCE_LABELS[state] || state);
-
-  if (presenceLabel) {
-    presenceLabel.textContent = label || PRESENCE_LABELS[state] || state;
+  if (state === 'thinking') {
+    presenceLabel.textContent = 'Examiner is thinking...';
+    presenceLabel.classList.add('presence-label--thinking');
+  } else {
+    presenceLabel.textContent = '';
+    presenceLabel.classList.remove('presence-label--thinking');
   }
 }
 
@@ -96,65 +78,6 @@ export function showQuestion(text, type = null) {
       badge.hidden = true;
     }
   }
-}
-
-// ── Live transcript ───────────────────────────────────────────────────────────
-
-let _finalTranscript = '';
-
-/**
- * Append text to the live answer transcript.
- * @param {string} text
- * @param {boolean} isFinal  Final text is shown in normal weight; interim in lighter colour
- */
-export function appendTranscript(text, isFinal) {
-  const el = document.getElementById('live-transcript');
-  if (!el) return;
-
-  if (isFinal) {
-    _finalTranscript += (_finalTranscript ? ' ' : '') + text.trim();
-  }
-
-  // Render: final text + interim text
-  const interimEl = el.querySelector('.transcript-interim');
-  const finalEl = el.querySelector('.transcript-final');
-
-  if (finalEl) finalEl.textContent = _finalTranscript;
-  if (interimEl) interimEl.textContent = isFinal ? '' : text;
-
-  el.scrollTop = el.scrollHeight;
-}
-
-/**
- * Clear the live transcript (call between questions).
- */
-export function clearTranscript() {
-  _finalTranscript = '';
-  const el = document.getElementById('live-transcript');
-  if (!el) return;
-  const finalEl = el.querySelector('.transcript-final');
-  const interimEl = el.querySelector('.transcript-interim');
-  if (finalEl) finalEl.textContent = '';
-  if (interimEl) interimEl.textContent = '';
-}
-
-/**
- * Get the current final transcript text.
- * @returns {string}
- */
-export function getFinalTranscript() {
-  return _finalTranscript;
-}
-
-/**
- * Set the final transcript (used when student edits it in the textarea).
- */
-export function setFinalTranscript(text) {
-  _finalTranscript = text;
-  const el = document.getElementById('live-transcript');
-  if (!el) return;
-  const finalEl = el.querySelector('.transcript-final');
-  if (finalEl) finalEl.textContent = _finalTranscript;
 }
 
 // ── History panel ─────────────────────────────────────────────────────────────
@@ -213,7 +136,7 @@ export function hideEvalChip() {
   if (chip) chip.hidden = true;
 }
 
-// ── Nudge display ─────────────────────────────────────────────────────────────
+// ── Nudge / Hint display ──────────────────────────────────────────────────────
 
 export function showNudge(text) {
   const el = document.getElementById('nudge-text');
@@ -225,22 +148,6 @@ export function showNudge(text) {
 export function hideNudge() {
   const box = document.getElementById('nudge-box');
   if (box) box.hidden = true;
-  hideNudgeActions();
-}
-
-export function showNudgeActions(onRephrase, onSkip) {
-  const actions = document.getElementById('nudge-actions');
-  if (!actions) return;
-  actions.hidden = false;
-  const rBtn = actions.querySelector('#btn-rephrase');
-  const sBtn = actions.querySelector('#btn-skip');
-  if (rBtn) rBtn.onclick = onRephrase;
-  if (sBtn) sBtn.onclick = onSkip;
-}
-
-export function hideNudgeActions() {
-  const actions = document.getElementById('nudge-actions');
-  if (actions) actions.hidden = true;
 }
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
@@ -286,41 +193,14 @@ export function showFeedback(data) {
   if (!screen) return;
 
   const s = data.summary;
-  const paceClass = s.avg_wpm == null ? '' : s.avg_wpm < 100 ? 'pace--slow' : s.avg_wpm <= 160 ? 'pace--ok' : 'pace--fast';
 
-  const paceVal = s.avg_wpm != null ? `${s.avg_wpm} wpm` : '-';
-  const paceSub = s.pace_note || '';
-
-  const fillersVal = s.fillers_per_minute != null ? `${s.fillers_per_minute}/min` : '-';
-  const fillersSub = s.fillers_per_minute != null
-    ? (s.filler_count != null ? `${s.filler_count} total` : '')
-    : (s.pace_note || '');
-
-  const delayVal = s.avg_first_speech_delay_sec != null ? `${s.avg_first_speech_delay_sec}s` : '-';
-  const delaySub = s.avg_first_speech_delay_sec != null ? '' : (s.pace_note || '');
-
-  // Build summary cards
+  // Build summary cards (only questions answered card in text-only mode)
   const summaryEl = screen.querySelector('#feedback-summary');
   if (summaryEl) {
     summaryEl.innerHTML = `
       <div class="summary-card">
         <span class="card-value">${s.questions}</span>
         <span class="card-label">Questions answered</span>
-      </div>
-      <div class="summary-card">
-        <span class="card-value ${paceClass}">${paceVal}</span>
-        <span class="card-label">Speaking pace</span>
-        <span class="card-sub">${paceSub}</span>
-      </div>
-      <div class="summary-card">
-        <span class="card-value">${fillersVal}</span>
-        <span class="card-label">Fillers per minute</span>
-        <span class="card-sub">${fillersSub}</span>
-      </div>
-      <div class="summary-card">
-        <span class="card-value">${delayVal}</span>
-        <span class="card-label">Avg. response delay</span>
-        <span class="card-sub">${delaySub}</span>
       </div>
     `;
   }
@@ -331,9 +211,6 @@ export function showFeedback(data) {
     perQEl.innerHTML = data.per_question.map((q, i) => {
       const v = VERDICT_LABELS[q.verdict] || VERDICT_LABELS.partial;
       const vCls = q.verdict === 'strong' ? 'verdict--strong' : q.verdict === 'weak' ? 'verdict--weak' : 'verdict--partial';
-      const fillerStr = q.fillers && Object.keys(q.fillers).length
-        ? Object.entries(q.fillers).map(([w, n]) => `"${w}" x${n}`).join(', ')
-        : 'None';
       return `
         <details class="perq-item">
           <summary class="perq-summary">
@@ -345,8 +222,6 @@ export function showFeedback(data) {
             <p class="perq-section">Section: ${escapeHtml(q.section)}</p>
             ${q.covered && q.covered.length ? `<p class="perq-covered">Covered: ${q.covered.map(escapeHtml).join(', ')}</p>` : ''}
             ${q.missed && q.missed.length ? `<p class="perq-missed">Could mention: ${q.missed.map(escapeHtml).join(', ')}</p>` : ''}
-            <p class="perq-pace">Speaking pace: ${q.wpm != null ? q.wpm + ' wpm' : '--'}</p>
-            <p class="perq-fillers">Filler words: ${fillerStr}</p>
           </div>
         </details>
       `;
@@ -361,6 +236,8 @@ export function showFeedback(data) {
       <ul>${data.weak_topics.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul>
     `;
     weakEl.hidden = false;
+  } else if (weakEl) {
+    weakEl.hidden = true;
   }
 
   // Suggestions
@@ -371,6 +248,8 @@ export function showFeedback(data) {
       <ol>${data.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
     `;
     suggEl.hidden = false;
+  } else if (suggEl) {
+    suggEl.hidden = true;
   }
 
   // Disclaimer
@@ -438,46 +317,6 @@ export function showToast(message) {
   toast.classList.add('toast--visible');
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => toast.classList.remove('toast--visible'), 3500);
-}
-
-// ── Countdown hint ────────────────────────────────────────────────────────────
-
-export function updateCountdown(secs) {
-  const el = document.getElementById('countdown-hint');
-  if (!el) return;
-  if (secs != null && secs > 0) {
-    el.textContent = `Sending in ${secs}...`;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-    el.textContent = '';
-  }
-}
-
-// ── Mic button ────────────────────────────────────────────────────────────────
-
-export function setMicActive(active) {
-  const btn = document.getElementById('btn-mic');
-  if (!btn) return;
-  btn.classList.toggle('mic--active', active);
-  btn.setAttribute('aria-pressed', String(active));
-  btn.title = active ? 'Mute microphone' : 'Unmute microphone';
-}
-
-// ── Typing fallback ───────────────────────────────────────────────────────────
-
-export function showTypingFallback(show) {
-  const panel = document.getElementById('typing-panel');
-  const voiceControls = document.getElementById('voice-controls');
-  if (panel) panel.hidden = !show;
-  if (voiceControls) voiceControls.hidden = show;
-}
-
-// ── Mic check overlay ─────────────────────────────────────────────────────────
-
-export function showMicCheckOverlay(show) {
-  const el = document.getElementById('mic-check-overlay');
-  if (el) el.hidden = !show;
 }
 
 // ── Utility ──────────────────────────────────────────────────────────────────
