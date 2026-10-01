@@ -20,27 +20,44 @@ const MOCK_SECTIONS = [
 ];
 
 let _mockTurnCount = 0;
-const MOCK_QUESTIONS = [
-  'Can you explain the main motivation behind your project?',
-  'Walk me through the architecture you chose for the system.',
-  'What methodology did you follow and why did you pick it over alternatives?',
-  'What were the key results and how did you measure success?',
-  'What limitations does your current implementation have?',
+let _mockSections = [
+  { id: 1, title: 'Introduction', word_count: 412, text: 'We introduce an automated pipeline for distributed inference across resource-constrained edge nodes.' },
+  { id: 2, title: 'Methodology', word_count: 638, text: 'The proposed algorithm uses dynamic tensor partitioning and adaptive quantization to reduce communication latency.' },
+  { id: 3, title: 'Implementation', word_count: 891, text: 'We implemented the core scheduler in Rust using asynchronous event loops and zero-copy shared memory queues.' },
+  { id: 4, title: 'Results and Discussion', word_count: 544, text: 'Experimental evaluations demonstrated a 42 percent reduction in end-to-end latency with minimal accuracy degradation.' },
+  { id: 5, title: 'Conclusion', word_count: 210, text: 'The edge scheduling paradigm offers a viable approach for latency-critical deep learning deployments.' },
 ];
+
+function _makeMockQuestion(sec, qid) {
+  const words = (sec.text || sec.title).split(/\s+/);
+  const snippet = words.slice(0, Math.min(6, words.length)).join(' ');
+  return {
+    id: qid,
+    text: `Regarding "${snippet}" in ${sec.title}, can you walk me through the specific design choices and tradeoffs?`,
+    section_id: sec.id,
+    section_title: sec.title,
+    evidence: snippet,
+  };
+}
 
 const MOCK_RESPONSES = {
   health: { status: 'ok', llm_provider: 'mock' },
-  upload: { upload_id: 'u_mock01', sections: MOCK_SECTIONS },
-  session: {
-    session_id: 's_mock01',
-    question: { id: 1, text: MOCK_QUESTIONS[0], section_id: 1 },
-    silence_nudge_seconds: 8,
+  upload: { upload_id: 'u_mock01', sections: _mockSections.map(s => ({ id: s.id, title: s.title, word_count: s.word_count })) },
+  session: () => {
+    _mockTurnCount = 0;
+    const sec = _mockSections[1] || _mockSections[0];
+    return {
+      session_id: 's_mock01',
+      question: _makeMockQuestion(sec, 1),
+      silence_nudge_seconds: 8,
+    };
   },
   turn: (qid) => {
     _mockTurnCount++;
     const isLast = _mockTurnCount >= 5;
     const verdicts = ['strong', 'partial', 'weak'];
     const verdict = verdicts[_mockTurnCount % 3];
+    const nextSec = _mockSections[_mockTurnCount % _mockSections.length];
     return {
       evaluation: {
         verdict,
@@ -50,12 +67,8 @@ const MOCK_RESPONSES = {
       next: isLast
         ? { type: 'end', question: null }
         : {
-            type: _mockTurnCount % 3 === 0 ? 'followup' : 'new_topic',
-            question: {
-              id: qid + 1,
-              text: MOCK_QUESTIONS[Math.min(_mockTurnCount, MOCK_QUESTIONS.length - 1)],
-              section_id: (_mockTurnCount % MOCK_SECTIONS.length) + 1,
-            },
+            type: _mockTurnCount % 2 === 0 ? 'followup' : 'new_topic',
+            question: _makeMockQuestion(nextSec, qid + 1),
           },
     };
   },
@@ -68,13 +81,16 @@ const MOCK_RESPONSES = {
       questions: 5,
       level: 'normal',
     },
-    per_question: MOCK_QUESTIONS.slice(0, 5).map((q, i) => ({
-      question: q,
-      section: MOCK_SECTIONS[i % MOCK_SECTIONS.length].title,
-      verdict: ['strong', 'partial', 'weak', 'strong', 'partial'][i],
-      covered: ['main idea', 'system design'],
-      missed: i % 2 ? ['performance data', 'comparison to alternatives'] : [],
-    })),
+    per_question: _mockSections.slice(0, 5).map((sec, i) => {
+      const qObj = _makeMockQuestion(sec, i + 1);
+      return {
+        question: qObj.text,
+        section: sec.title,
+        verdict: ['strong', 'partial', 'weak', 'strong', 'partial'][i],
+        covered: ['main idea', 'system design'],
+        missed: i % 2 ? ['performance data', 'comparison to alternatives'] : [],
+      };
+    }),
     weak_topics: ['Methodology', 'Results analysis'],
     suggestions: [
       'Include specific figures or metrics from your results when addressing evaluation questions.',
@@ -83,7 +99,7 @@ const MOCK_RESPONSES = {
     ],
     disclaimer: 'Practice feedback only. It is not an official grade.',
   },
-  transcript: `# VIVORA practice session (normal)\nStarted: 2026-10-01T11:00:00\n\n## Q1 [Introduction]\n**Examiner:** Can you explain the main motivation behind your project?\n**You:** Our project aims to help students practise for their viva...\n*Verdict: strong*\n`,
+  transcript: `# VIVORA practice session (normal)\nStarted: 2026-10-01T11:00:00\n\n## Q1 [Methodology]\n**Examiner:** Regarding the proposed algorithm in Methodology, can you explain the tradeoffs?\n**You:** We evaluated latency and throughput...\n*Verdict: strong*\n`,
 };
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -161,7 +177,7 @@ export async function uploadText(text) {
  * @returns {Promise<{session_id, question, silence_nudge_seconds}>}
  */
 export async function createSession(uploadId, level, numQuestions) {
-  if (MOCK_MODE) { _mockTurnCount = 0; return MOCK_RESPONSES.session; }
+  if (MOCK_MODE) { return typeof MOCK_RESPONSES.session === 'function' ? MOCK_RESPONSES.session() : MOCK_RESPONSES.session; }
   return apiJSON('/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

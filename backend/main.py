@@ -1,5 +1,6 @@
 """VIVORA backend. Run:  uvicorn main:app --reload"""
 import logging
+import re
 import time
 from typing import Literal
 
@@ -26,6 +27,18 @@ FALLBACK_NUDGES = ["Start with what this part of the project does.",
                    "Take your time. Begin with the problem it solves."]
 DISCLAIMER = "Practice feedback only. It is not an official grade."
 
+CORE_SECTION_KEYWORDS = [
+    "methodology", "proposed system", "system architecture", "architecture",
+    "implementation", "design", "model", "algorithm", "results", "results and discussion",
+    "evaluation", "analysis", "experiments", "experimental", "system design", "approach",
+    "components", "protocol", "scheme", "verification", "benchmark", "framework", "pipeline"
+]
+
+INTRO_SECTION_KEYWORDS = [
+    "abstract", "overview", "introduction", "background", "literature review",
+    "problem statement", "summary", "executive summary", "preface"
+]
+
 
 # ---------- request models ----------
 class SessionIn(BaseModel):
@@ -40,7 +53,7 @@ class TurnIn(BaseModel):
     answer: str = Field(max_length=6000)
     duration_sec: float = Field(default=0, ge=0, le=900)
     first_speech_delay_sec: float | None = Field(default=None, ge=0, le=900)
-    input_mode: Literal["voice", "typed"] = "voice"   # typed answers are excluded from pace and delay stats
+    input_mode: Literal["voice", "typed"] = "voice"
 
 
 class NudgeIn(BaseModel):
@@ -65,34 +78,162 @@ def _section(s: dict, section_id: int) -> dict:
     return next(x for x in s["sections"] if x["id"] == section_id)
 
 
-def _pick_section(s: dict) -> dict:
-    """Least-asked section first; sections answered weakly come earlier on ties; avoid repeating the current one."""
-    asked = {x["id"]: 0 for x in s["sections"]}
-    for sid in s["asked_sections"]:
-        asked[sid] = asked.get(sid, 0) + 1
-    weak = {t["section_id"] for t in s["turns"] if t["verdict"] in ("weak", "partial")}
-    current = s["current"]["section_id"] if s.get("current") else None
-    pool = [x for x in s["sections"] if x["id"] != current] or s["sections"]
-    return min(pool, key=lambda x: (asked[x["id"]], 0 if x["id"] in weak else 1, x["id"]))
+def _score_section_meaningfulness(sec: dict) -> float:
+    """Score how substantive and technical a section is for initiating questions."""
+    title_lower = sec["title"].lower()
+    score = 0.0
+
+    for kw in CORE_SECTION_KEYWORDS:
+        if kw in title_lower:
+            score += 15.0
+            break
+
+    for kw in INTRO_SECTION_KEYWORDS:
+        if kw in title_lower:
+            score -= 5.0
+            break
+
+    wc = sec.get("word_count", 0)
+    if wc >= 80:
+        score += min(wc / 50.0, 10.0)
+    else:
+        score -= 5.0
+
+    return score
 
 
-async def _new_question(s: dict, section: dict) -> dict:
-    text = await llm.complete(prompts.system_prompt(s["level"]),
-                              prompts.first_question_prompt(section["title"], section["text"], s["all_questions"]))
-    q = {"id": s["next_qid"], "text": text.strip().strip('"'), "section_id": section["id"]}
-    s["next_qid"] += 1
-    s["asked_sections"].append(section["id"])
-    s["all_questions"].append(q["text"])
-    return q
+def _pick_opening_section(sections: list[dict]) -> dict:
+    """Choose a meaningful, technical section from the uploaded report rather than a generic intro."""
+    if not sections:
+        raise HTTPException(400, "No valid sections found in report.")
+    if len(sections) == 1:
+        return sections[0]
+
+    scored = sorted(sections, key=_score_section_meaningfulness, reverse=True)
+    return scored[0]
+
+
+def _pick_next_section(s: dict) -> dict:
+    """Document-dependent section selection for new topics based on history and coverage."""
+    sections = s["sections"]
+    if len(sections) == 1:
+        return sections[0]
+
+    current_id = s["current"]["section_id"] if s.get("current") else None
+    asked_counts = {x["id"]: 0 for x in sections}
+    for sid in s.get("asked_sections", []):
+        asked_counts[sid] = asked_counts.get(sid, 0) + 1
+
+    weak_sections = {t["section_id"] for t in s.get("turns", []) if t.get("verdict") in ("weak", "partial")}
+    pool = [x for x in sections if x["id"] != current_id] or sections
+
+    def _rank_key(sec: dict):
+        asked = asked_counts.get(sec["id"], 0)
+        is_weak = 0 if sec["id"] in weak_sections else 1
+        substance = -_score_section_meaningfulness(sec)
+        return (asked, is_weak, substance, sec["id"])
+
+    return min(pool, key=_rank_key)
+
+
+def _validate_question(q_data: dict, section: dict) -> tuple[bool, str]:
+    """Strictly validate structured question format and grounding evidence."""
+    if not isinstance(q_data, dict):
+        return False, "Response is not a valid JSON dictionary."
+
+    question = str(q_data.get("question") or "").strip()
+    evidence = str(q_data.get("evidence") or "").strip()
+
+    if not question:
+        return False, "Question is empty."
+    if not evidence:
+        return False, "Evidence is empty."
+
+    norm_excerpt = " ".join(section["text"].lower().split())
+    norm_evidence = " ".join(evidence.lower().split())
+
+    if norm_evidence not in norm_excerpt:
+        return False, f"Evidence '{evidence}' is not an exact substring in the selected excerpt."
+
+    if len(evidence) < 4:
+        return False, f"Evidence '{evidence}' is too short to prove document grounding."
+
+    generic_patterns = [
+        r"^what is your project\??$",
+        r"^can you explain your project\??$",
+        r"^explain your project\??$",
+        r"^tell me about your project\??$",
+        r"^can you explain the main decision you made\??$",
+        r"^what did you do in this project\??$",
+    ]
+    for pat in generic_patterns:
+        if re.match(pat, question.strip(), re.I):
+            return False, f"Question '{question}' is too generic and not grounded in the specific excerpt."
+
+    return True, ""
+
+
+async def _generate_question(s: dict, section: dict, is_followup: bool = False,
+                             history: list[dict] | None = None,
+                             missed_points: list[str] | None = None) -> dict:
+    """Generate a question requiring structured JSON with evidence, validated against the excerpt."""
+    level = s["level"]
+    sys_p = prompts.system_prompt(level)
+    prompt = prompts.question_prompt(
+        section_title=section["title"],
+        section_id=section["id"],
+        section_text=section["text"],
+        asked=s["all_questions"],
+        is_followup=is_followup,
+        history=history,
+        missed_points=missed_points
+    )
+
+    last_err = ""
+    for attempt in range(3):
+        cur_prompt = prompt if attempt == 0 else (
+            f"{prompt}\n\nIMPORTANT: Your previous output was rejected: {last_err}. "
+            "You MUST return valid JSON with an exact verbatim substring from the excerpt as 'evidence'."
+        )
+
+        q_data = await llm.complete_json(sys_p, cur_prompt)
+        valid, last_err = _validate_question(q_data, section)
+        if valid:
+            q = {
+                "id": s["next_qid"],
+                "text": q_data["question"].strip(),
+                "section_id": section["id"],
+                "section_title": section["title"],
+                "evidence": q_data["evidence"].strip(),
+            }
+            s["next_qid"] += 1
+            s["asked_sections"].append(section["id"])
+            s["all_questions"].append(q["text"])
+
+            # Server-side debug logging per Requirement 10
+            first_part = section["text"][:80].replace("\n", " ").strip()
+            last_part = section["text"][-80:].replace("\n", " ").strip()
+            log.info(
+                "[GROUNDING DEBUG] section_id=%s title='%s' excerpt_preview='%s...%s' question='%s' evidence='%s'",
+                section["id"], section["title"], first_part, last_part, q["text"], q["evidence"]
+            )
+            return q
+
+        log.warning("Question rejected on attempt %d: %s", attempt + 1, last_err)
+
+    raise llm.LLMError(f"Failed to generate a grounded question after 3 attempts: {last_err}")
 
 
 def _clean_eval(raw: dict | None) -> dict:
     raw = raw or {}
     verdict = raw.get("verdict") if raw.get("verdict") in ("strong", "partial", "weak") else "partial"
     as_list = lambda v: [str(x) for x in v][:6] if isinstance(v, list) else []
-    return {"verdict": verdict, "covered": as_list(raw.get("covered")), "missed": as_list(raw.get("missed")),
-            "next_type": raw.get("next_type") if raw.get("next_type") in ("followup", "new_topic") else "new_topic",
-            "next_question": str(raw.get("next_question") or "").strip()}
+    return {
+        "verdict": verdict,
+        "covered": as_list(raw.get("covered")),
+        "missed": as_list(raw.get("missed")),
+        "next_type": raw.get("next_type") if raw.get("next_type") in ("followup", "new_topic") else "new_topic"
+    }
 
 
 def _llm_error(e: Exception) -> HTTPException:
@@ -110,6 +251,7 @@ def health():
 async def upload(request: Request):
     """Accepts multipart (field 'file' = .pdf/.docx) or JSON {"text": "..."} or form field 'text'."""
     ctype = request.headers.get("content-type", "")
+    filename = "pasted_text"
     try:
         if "application/json" in ctype:
             body = await request.json()
@@ -118,10 +260,11 @@ async def upload(request: Request):
             form = await request.form()
             f = form.get("file")
             if f is not None and hasattr(f, "read"):
+                filename = f.filename or "uploaded_file"
                 data = await f.read(config.MAX_UPLOAD_MB * 1024 * 1024 + 1)
                 if len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
                     raise HTTPException(413, f"File too large (max {config.MAX_UPLOAD_MB} MB)")
-                text = parsing.extract_text(f.filename or "", data)
+                text = parsing.extract_text(filename, data)
             else:
                 text = str(form.get("text") or "")
     except ValueError as e:
@@ -130,13 +273,17 @@ async def upload(request: Request):
         raise
     except Exception as e:
         log.warning("Upload parse failed: %s", e)
-        raise HTTPException(400, "Could not read that file. Try pasting the text instead.")
+        raise HTTPException(400, "Could not read that report. The document format is unreadable or corrupted.")
 
     if len(text.split()) < 60:
         raise HTTPException(400, "Not enough text to ask questions from (need at least about 60 words).")
     sections = parsing.split_sections(text)
     if not sections:
-        raise HTTPException(400, "Could not find any content in that report.")
+        raise HTTPException(400, "Could not extract readable sections from that report.")
+
+    # Server-side upload logging per Requirement 10
+    log.info("[UPLOAD DEBUG] filename='%s' extracted_chars=%d sections=%d", filename, len(text), len(sections))
+
     uid = store.add_upload(sections)
     return {"upload_id": uid,
             "sections": [{"id": s["id"], "title": s["title"], "word_count": s["word_count"]} for s in sections]}
@@ -148,13 +295,19 @@ async def create_session(body: SessionIn):
     if not up:
         raise HTTPException(404, "Unknown or expired upload")
     sections = parsing.eligible_sections(up["sections"])
+    if not sections:
+        raise HTTPException(400, "Report has no eligible sections for viva questions.")
+
     s = {"sections": sections, "level": body.level, "num_questions": body.num_questions, "turns": [],
          "asked_sections": [], "all_questions": [], "next_qid": 1, "topic_followups": 0, "current": None,
          "finished": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "nudges": {}, "feedback": None}
+
+    opening_sec = _pick_opening_section(sections)
     try:
-        q = await _new_question(s, _pick_section(s))
+        q = await _generate_question(s, opening_sec, is_followup=False)
     except llm.LLMError as e:
         raise _llm_error(e)
+
     s["current"] = q
     sid = store.add_session(s)
     return {"session_id": sid, "question": q, "silence_nudge_seconds": config.SILENCE_NUDGE_SECONDS}
@@ -174,44 +327,48 @@ async def turn(body: TurnIn):
     cur = s["current"]
     section = _section(s, cur["section_id"])
     max_f = prompts.MAX_FOLLOWUPS[s["level"]]
+
     try:
         raw = await llm.complete_json(
             prompts.system_prompt(s["level"]),
             prompts.evaluation_prompt(section["title"], section["text"], s["turns"][-3:], cur["text"], answer,
-                                      s["topic_followups"], max_f))
+                                      s["topic_followups"], max_f)
+        )
     except llm.LLMError as e:
         raise _llm_error(e)
     ev = _clean_eval(raw)
 
     voice = body.input_mode == "voice"
     wpm = metrics.words_per_minute(answer, body.duration_sec) if voice else None
-    s["turns"].append({"question_id": cur["id"], "question": cur["text"], "section_id": section["id"],
-                       "section_title": section["title"], "answer": answer, "duration_sec": body.duration_sec,
-                       "first_speech_delay_sec": body.first_speech_delay_sec if voice else None,
-                       "input_mode": body.input_mode, "wpm": wpm,
-                       "fillers": metrics.count_fillers(answer), **{k: ev[k] for k in ("verdict", "covered", "missed")}})
+    s["turns"].append({
+        "question_id": cur["id"], "question": cur["text"], "section_id": section["id"],
+        "section_title": section["title"], "answer": answer, "duration_sec": body.duration_sec,
+        "first_speech_delay_sec": body.first_speech_delay_sec if voice else None,
+        "input_mode": body.input_mode, "wpm": wpm,
+        "fillers": metrics.count_fillers(answer),
+        **{k: ev[k] for k in ("verdict", "covered", "missed")}
+    })
 
     evaluation = {k: ev[k] for k in ("verdict", "covered", "missed")}
     if len(s["turns"]) >= s["num_questions"]:
         s["finished"], s["current"] = True, None
         return {"evaluation": evaluation, "next": {"type": "end", "question": None}}
 
-    want_follow = (ev["next_type"] == "followup" and ev["verdict"] != "strong" and bool(ev["next_question"])
-                   and s["topic_followups"] < max_f)
+    want_follow = (ev["next_type"] == "followup" and ev["verdict"] != "strong" and s["topic_followups"] < max_f)
     try:
         if want_follow:
             s["topic_followups"] += 1
-            q = {"id": s["next_qid"], "text": ev["next_question"], "section_id": section["id"]}
-            s["next_qid"] += 1
-            s["all_questions"].append(q["text"])
+            q = await _generate_question(s, section, is_followup=True, history=s["turns"][-3:], missed_points=ev["missed"])
             kind = "followup"
         else:
             s["topic_followups"] = 0
-            q = await _new_question(s, _pick_section(s))
+            next_sec = _pick_next_section(s)
+            q = await _generate_question(s, next_sec, is_followup=False)
             kind = "new_topic"
     except llm.LLMError as e:
-        s["turns"].pop()  # let the client retry the same answer
+        s["turns"].pop()  # allow retry
         raise _llm_error(e)
+
     s["current"] = q
     return {"evaluation": evaluation, "next": {"type": kind, "question": q}}
 
@@ -224,7 +381,7 @@ async def nudge(body: NudgeIn):
         raise HTTPException(400, "question_id does not match the current question")
     used = s["nudges"].get(cur["id"], 0)
     if used >= config.MAX_NUDGES_PER_QUESTION or body.nudge_number > config.MAX_NUDGES_PER_QUESTION:
-        return {"text": "No problem. Want me to rephrase the question, or skip it?", "offer_skip": True}
+        return {"text": "No problem. You can skip this question if you would like.", "offer_skip": True}
     s["nudges"][cur["id"]] = used + 1
     section = _section(s, cur["section_id"])
     try:
@@ -245,7 +402,6 @@ async def feedback(body: FeedbackIn):
 
     turns = s["turns"]
     total_fillers = sum(t["fillers"]["total"] for t in turns)
-    # Pace and delay only make sense for spoken answers; typed answers are left out.
     spoken = [t for t in turns if t.get("input_mode") == "voice" and t["duration_sec"] > 0]
     spoken_sec = sum(t["duration_sec"] for t in spoken)
     spoken_words = sum(len(t["answer"].split()) for t in spoken)
@@ -264,7 +420,7 @@ async def feedback(body: FeedbackIn):
         log.warning("Feedback LLM failed, using fallback: %s", e)
     summary_ai = summary_ai or {}
     weak_topics = [str(x) for x in summary_ai.get("weak_topics", [])][:3] if isinstance(summary_ai.get("weak_topics"), list) else []
-    if not weak_topics:  # fallback: sections with the weakest verdicts
+    if not weak_topics:
         weak_topics = list(dict.fromkeys(t["section_title"] for t in turns if t["verdict"] != "strong"))[:3]
     suggestions = [str(x) for x in summary_ai.get("suggestions", [])][:3] if isinstance(summary_ai.get("suggestions"), list) else []
 

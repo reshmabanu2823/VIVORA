@@ -164,3 +164,95 @@ def test_typed_only_session_has_no_pace():
                                "answer": "typed only", "duration_sec": 120, "input_mode": "typed"})
     s = client.post("/feedback", json={"session_id": r["session_id"]}).json()["summary"]
     assert s["avg_wpm"] is None and s["fillers_per_minute"] is None and s["avg_first_speech_delay_sec"] is None
+
+
+REPORT_DRONE = """1. Executive Summary
+Autonomous aerial robotics operate in complex environments where global positioning systems frequently fail. In subterranean and densely forested areas, unmanned aerial systems require onboard state estimation algorithms capable of sustained navigation without drift.
+
+2. LiDAR SLAM Architecture
+We implemented the LeGO-LOAM algorithm coupled with a Velodyne VLP-16 sensor for point cloud feature extraction. Ground plane segmentation isolates planar surfaces while edge features are extracted using curvature analysis across laser rings. The coordinate transform system ensures real-time geometric consistency throughout volatile trajectory changes.
+
+3. Factor Graph Optimization
+Loop closure detection employs Scan Context descriptors to identify revisited locations, preventing long-term drift accumulation. Non-linear factor graph optimization is performed via GTSAM utilizing the Levenberg-Marquardt optimizer with custom odometry priors and landmark associations across keyframes.
+
+4. Experimental Field Results
+Flight trials across 12 subterranean cavern trials exhibited an absolute trajectory error below 4.2 centimeters. Processing latency remained bounded at 38 milliseconds per sweep on an NVIDIA Jetson Orin NX, confirming our system operates within strict real-time deadlines under degraded visibility.
+"""
+
+REPORT_ZK_HEALTH = """1. Executive Summary
+Electronic health records contain highly sensitive clinical data that cannot be directly revealed during multi-institutional epidemiological studies without violating critical privacy regulations. Secure computational frameworks must guarantee confidentiality while maintaining verifiable correctness.
+
+2. Zero-Knowledge Proof Scheme
+Our protocol constructs succinct non-interactive arguments of knowledge based on the Groth16 proving system over the BN254 elliptic curve. Medical predicates are compiled into Rank-1 Constraint Systems using the Circom DSL with custom arithmetic gates. Prover computations generate cryptographic proofs without leaking patient attributes.
+
+3. Smart Contract Verification
+On-chain verification contracts deployed on Ethereum evaluate elliptic curve pairing equations using the alt_bn128 precompile. Gas consumption is strictly capped at 231,000 units regardless of the size of the patient cohort, enabling cost-effective audit verification on public decentralized ledgers.
+
+4. Clinical Audit Benchmarks
+Benchmark evaluations across 50,000 synthetic patient records demonstrated proof generation times under 820 milliseconds on a commodity CPU, with zero data leakage of clinical identifiers or disease diagnosis codes during extensive vulnerability stress-testing.
+"""
+
+
+def test_two_different_reports_produce_grounded_distinct_questions():
+    up_drone = _upload(REPORT_DRONE)
+    up_zk = _upload(REPORT_ZK_HEALTH)
+
+    # 1. Extracted text differs
+    assert up_drone["upload_id"] != up_zk["upload_id"]
+    drone_titles = [s["title"] for s in up_drone["sections"]]
+    zk_titles = [s["title"] for s in up_zk["sections"]]
+    assert drone_titles != zk_titles
+
+    # 2. Sessions create unique sessions
+    s_drone_resp = client.post("/session", json={"upload_id": up_drone["upload_id"], "level": "normal", "num_questions": 3})
+    s_zk_resp = client.post("/session", json={"upload_id": up_zk["upload_id"], "level": "normal", "num_questions": 3})
+    assert s_drone_resp.status_code == 200
+    assert s_zk_resp.status_code == 200
+
+    s_drone = s_drone_resp.json()
+    s_zk = s_zk_resp.json()
+    assert s_drone["session_id"] != s_zk["session_id"]
+
+    q_drone = s_drone["question"]
+    q_zk = s_zk["question"]
+
+    # 3. Questions must differ and not use hardcoded strings
+    assert q_drone["text"] != q_zk["text"]
+    generic_fallbacks = [
+        "In the",
+        "main decision you made",
+        "Can you explain the main motivation",
+        "approach over the alternatives",
+    ]
+    for fallback in generic_fallbacks:
+        assert fallback not in q_drone["text"] or "LeGO-LOAM" in q_drone["text"]
+        assert fallback not in q_zk["text"] or "Groth16" in q_zk["text"]
+
+    # 4. Evidence must exist verbatim in the respective report and not in the other report
+    assert "evidence" in q_drone and len(q_drone["evidence"]) > 5
+    assert "evidence" in q_zk and len(q_zk["evidence"]) > 5
+    assert q_drone["evidence"] in REPORT_DRONE
+    assert q_drone["evidence"] not in REPORT_ZK_HEALTH
+    assert q_zk["evidence"] in REPORT_ZK_HEALTH
+    assert q_zk["evidence"] not in REPORT_DRONE
+
+    # 5. Question references the evidence or section topic
+    assert q_drone["section_title"] != q_zk["section_title"]
+    assert "LiDAR" in q_drone["section_title"] or "SLAM" in q_drone["section_title"]
+    assert "Zero-Knowledge" in q_zk["section_title"] or "Smart Contract" in q_zk["section_title"]
+
+    # 6. Follow-up turn maintains grounded question generation with verbatim evidence
+    turn_resp = client.post("/turn", json={
+        "session_id": s_drone["session_id"],
+        "question_id": q_drone["id"],
+        "answer": "We implemented LeGO-LOAM to extract features from Velodyne point clouds.",
+        "duration_sec": 15,
+        "input_mode": "voice"
+    })
+    assert turn_resp.status_code == 200
+    nxt = turn_resp.json()["next"]
+    assert nxt["type"] in ("followup", "new_topic")
+    next_q = nxt["question"]
+    assert next_q["evidence"] in REPORT_DRONE
+    assert next_q["evidence"] not in REPORT_ZK_HEALTH
+

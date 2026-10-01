@@ -312,7 +312,7 @@ function askCurrentQuestion(questionType) {
 
   // Update progress and question
   ui.setProgress(state.questionNumber, state.numQuestions, state.level);
-  ui.showQuestion(state.currentQuestion.text, questionType);
+  ui.showQuestion(state.currentQuestion.text, questionType, state.currentQuestion);
 
   // Clear and focus textarea
   const ta = document.getElementById('answer-text');

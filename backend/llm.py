@@ -99,18 +99,95 @@ async def complete_json(system: str, user: str) -> dict | None:
 
 
 def _mock(system: str, user: str) -> str:
-    """Deterministic fake model so the whole app can be run and tested without an API key."""
+    """Deterministic mock model that grounds questions in the actual supplied report excerpt."""
+    # 1. Feedback summary request
     if '"weak_topics"' in user:
-        return json.dumps({"weak_topics": ["Methodology"], "suggestions": ["Explain why you chose each technique.",
-                                                                           "Quote one number from your results."]})
+        topics = ["Methodology"]
+        m = re.search(r"\[(.*?)\]", user)
+        if m and m.group(1).strip():
+            topics = [m.group(1).strip()]
+        return json.dumps({
+            "weak_topics": topics[:2],
+            "suggestions": [
+                "Quantify technical metrics and benchmark comparisons.",
+                "Explain the architectural trade-offs made in your implementation."
+            ]
+        })
+
+    # 2. Evaluation request
     if '"verdict"' in user:
-        words = user.split("Student's spoken answer", 1)[-1].split("\n", 1)[0].split()
-        verdict = "strong" if len(words) > 40 else "partial" if len(words) > 12 else "weak"
-        return json.dumps({"verdict": verdict, "covered": ["main idea"], "missed": ["reason for the choice"],
-                           "next_type": "followup" if verdict != "strong" else "new_topic",
-                           "next_question": "You mentioned that, but why did you choose that approach over the alternatives?"})
-    if "nudge number" in user:
-        return "Start with what this part of the project does."
-    title = user.split("Section title:", 1)[-1].split("\n", 1)[0].strip()
-    n = user.count("\n- ")
-    return f"In the {title} section, can you explain the main decision you made? (mock question {n + 1})"
+        answer_part = user.split("Student's answer:", 1)[-1].split("\n", 1)[0]
+        words = answer_part.strip().split()
+        verdict = "strong" if len(words) > 35 else "partial" if len(words) > 10 else "weak"
+        return json.dumps({
+            "verdict": verdict,
+            "covered": ["primary concept"],
+            "missed": ["quantitative validation"] if verdict != "strong" else [],
+            "next_type": "followup" if verdict != "strong" else "new_topic"
+        })
+
+    # 3. Hint / nudge request
+    if "hint number" in user or "nudge number" in user:
+        excerpt_m = re.search(r"<report_excerpt>\s*(.*?)\s*</report_excerpt>", user, re.DOTALL)
+        if excerpt_m:
+            first_sentence = [s.strip() for s in re.split(r"[.!?]\s+", excerpt_m.group(1)) if len(s.strip()) > 10]
+            if first_sentence:
+                words = first_sentence[0].split()[:6]
+                return f"Consider starting with {' '.join(words)}."
+        return "Start with the core objective described in this section."
+
+    # 4. Structured Question Generation with exact evidence
+    title_m = re.search(r"Section title:\s*([^\n]+)", user)
+    title = title_m.group(1).strip() if title_m else "Methodology"
+
+    sid_m = re.search(r"Section ID:\s*(\d+)", user)
+    section_id = int(sid_m.group(1)) if sid_m else 1
+
+    excerpt_m = re.search(r"<report_excerpt>\s*(.*?)\s*</report_excerpt>", user, re.DOTALL)
+    excerpt = excerpt_m.group(1).strip() if excerpt_m else "Project report excerpt."
+
+    # Extract sentences from excerpt
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", excerpt) if len(s.strip()) > 15]
+    if not raw_sentences:
+        raw_sentences = [excerpt[:120].strip()]
+
+    # Pick sentence based on question count in prompt to ensure variation
+    already_count = user.count("\n- ")
+    sent_idx = already_count % len(raw_sentences)
+    target_sentence = raw_sentences[sent_idx]
+
+    # Extract a clean, verbatim phrase (3 to 8 words) from target_sentence as evidence
+    words = target_sentence.split()
+    if len(words) >= 4:
+        # Choose a meaningful phrase from the sentence
+        start_idx = 0 if len(words) <= 7 else min(1, len(words) - 5)
+        length = min(len(words) - start_idx, 6)
+        phrase = " ".join(words[start_idx:start_idx + length])
+    else:
+        phrase = target_sentence
+
+    # Ensure phrase is an exact substring in excerpt
+    if phrase not in excerpt:
+        # Fallback to direct slice
+        phrase = excerpt[:min(len(excerpt), 40)].strip()
+
+    # Determine question framing by level
+    level = "normal"
+    if "warmup" in system.lower():
+        level = "warmup"
+    elif "strict" in system.lower():
+        level = "strict"
+
+    if level == "warmup":
+        question = f"In the {title} section, can you explain how '{phrase}' operates within your project?"
+    elif level == "strict":
+        question = f"Your report states '{phrase}'. What specific quantitative evidence and trade-offs support this choice?"
+    else:
+        question = f"Regarding your work in {title}, what was the primary rationale behind '{phrase}'?"
+
+    return json.dumps({
+        "question": question,
+        "section_id": section_id,
+        "section_title": title,
+        "evidence": phrase
+    })

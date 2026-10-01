@@ -210,6 +210,24 @@
         <h2 id="question-text" class="question-text"></h2>
       </div>
 
+      <!-- Developer Grounding Debug Box -->
+      <div id="grounding-debug" class="grounding-debug" aria-live="polite">
+        <div class="grounding-debug__header">
+          <span class="grounding-debug__badge">GROUNDING DEBUG</span>
+          <span id="debug-section" class="grounding-debug__section">Section: --</span>
+        </div>
+        <div class="grounding-debug__body">
+          <div class="grounding-debug__row">
+            <span class="grounding-debug__label">Evidence:</span>
+            <span id="debug-evidence" class="grounding-debug__evidence">--</span>
+          </div>
+          <div class="grounding-debug__row">
+            <span class="grounding-debug__label">Question:</span>
+            <span id="debug-question" class="grounding-debug__question">--</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Error (session-level) -->
       <div id="session-error-box" hidden role="alert" aria-live="assertive" style="width:100%">
         <span id="session-error-message"></span>

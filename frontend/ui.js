@@ -62,8 +62,9 @@ export function setPresenceState(state) {
  * Show the current examiner question.
  * @param {string} text
  * @param {'new_topic'|'followup'|null} [type]
+ * @param {Object} [questionObj]
  */
-export function showQuestion(text, type = null) {
+export function showQuestion(text, type = null, questionObj = null) {
   const el = document.getElementById('question-text');
   const badge = document.getElementById('question-type-badge');
   if (el) el.textContent = text;
@@ -77,6 +78,21 @@ export function showQuestion(text, type = null) {
     } else {
       badge.hidden = true;
     }
+  }
+
+  // Developer Grounding Debug box
+  const debugSec = document.getElementById('debug-section');
+  const debugEv = document.getElementById('debug-evidence');
+  const debugQ = document.getElementById('debug-question');
+  if (debugSec) {
+    const title = questionObj?.section_title || (questionObj?.section_id ? `Section ${questionObj.section_id}` : '--');
+    debugSec.textContent = `Section: ${title}`;
+  }
+  if (debugEv) {
+    debugEv.textContent = questionObj?.evidence || '--';
+  }
+  if (debugQ) {
+    debugQ.textContent = questionObj?.text || text || '--';
   }
 }
 
