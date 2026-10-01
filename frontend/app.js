@@ -201,6 +201,14 @@ function initStartScreen() {
   });
 
   // Mic check
+  const btnMicCheckClose = document.getElementById('btn-mic-check-close');
+  if (btnMicCheckClose) {
+    btnMicCheckClose.addEventListener('click', () => {
+      if (state.stopMicLevel) { state.stopMicLevel(); state.stopMicLevel = null; }
+      ui.showMicCheckOverlay(false);
+    });
+  }
+
   if (btnMicCheck) {
     if (!speech.isVoiceAvailable()) {
       btnMicCheck.hidden = true;
