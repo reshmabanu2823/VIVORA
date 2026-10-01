@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VIVORA — Practice your viva</title>
+  <meta name="description" content="A calm, private place to practise your project viva with an AI examiner." />
+
+  <!-- Fonts: Lora (serif, headings/questions) + Inter (sans, UI) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:ital,wght@0,400;0,600;1,400&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ARIA live regions for screen readers -->
+  <div id="aria-live" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+  <div id="aria-assertive" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SCREEN 1 — START
+       ═══════════════════════════════════════════════════════════ -->
+  <main data-screen="start" class="screen start-screen">
+    <div class="container">
+
+      <!-- Header -->
+      <header class="start-header">
+        <h1>VIVORA</h1>
+        <p class="start-subtitle">An AI examiner that helps you practise your project viva.</p>
+        <span class="start-note">A private place to practise. Not an official grade.</span>
+      </header>
+
+      <!-- Upload section -->
+      <section class="upload-section card" aria-labelledby="upload-heading">
+        <h2 id="upload-heading" class="sr-only">Upload your report</h2>
+
+        <!-- Tabs -->
+        <div class="upload-tabs" role="tablist" aria-label="Upload method">
+          <button
+            id="tab-file"
+            class="tab-btn"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-file"
+          >Upload file</button>
+          <button
+            id="tab-paste"
+            class="tab-btn"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-paste"
+          >Paste text</button>
+        </div>
+
+        <!-- File panel -->
+        <div id="panel-file" role="tabpanel" aria-labelledby="tab-file">
+          <div
+            id="drop-zone"
+            class="drop-zone"
+            role="button"
+            tabindex="0"
+            aria-label="Upload your report. Click or drag and drop a PDF or DOCX file."
+          >
+            <span class="drop-zone-icon" aria-hidden="true">&#8679;</span>
+            <span id="drop-label" class="drop-label">
+              Drag and drop your report here, or click to browse
+            </span>
+            <span class="drop-hint">.pdf or .docx &nbsp;&middot;&nbsp; Max 10 MB</span>
+          </div>
+          <input
+            id="file-input"
+            type="file"
+            accept=".pdf,.docx"
+            class="sr-only"
+            aria-label="Upload report file"
+          />
+        </div>
+
+        <!-- Paste panel -->
+        <div id="panel-paste" role="tabpanel" aria-labelledby="tab-paste" hidden>
+          <div class="paste-panel">
+            <label for="paste-area" class="sr-only">Paste your report text here</label>
+            <textarea
+              id="paste-area"
+              rows="8"
+              placeholder="Paste the text of your project report here (at least 60 words)..."
+              aria-describedby="paste-hint"
+            ></textarea>
+            <p id="paste-hint" class="word-count-hint">Minimum 60 words</p>
+          </div>
+        </div>
+
+        <!-- Sections preview (shown after upload) -->
+        <div id="sections-preview" hidden aria-live="polite"></div>
+
+        <!-- Inline error for upload -->
+        <div id="error-box" hidden role="alert" aria-live="assertive">
+          <span id="error-message"></span>
+          <button id="btn-retry-error" class="btn btn--sm btn--secondary" hidden>Retry</button>
+        </div>
+      </section>
+
+      <!-- Level selector -->
+      <section class="level-section" aria-labelledby="level-heading">
+        <span id="level-heading" class="level-section-label">Examiner level</span>
+        <div class="level-cards" role="group" aria-labelledby="level-heading">
+
+          <div
+            class="level-card"
+            data-level="warmup"
+            role="button"
+            tabindex="0"
+            aria-pressed="false"
+            aria-label="Warm-up level: friendly and gentle questions"
+          >
+            <div class="level-card__title">Warm-up</div>
+            <div class="level-card__desc">Friendly, gentle. Good for a first run.</div>
+          </div>
+
+          <div
+            class="level-card level-card--selected"
+            data-level="normal"
+            role="button"
+            tabindex="0"
+            aria-pressed="true"
+            aria-label="Normal level: balanced, asks why and how"
+          >
+            <div class="level-card__title">Normal</div>
+            <div class="level-card__desc">Balanced. Asks why and how. Recommended.</div>
+          </div>
+
+          <div
+            class="level-card"
+            data-level="strict"
+            role="button"
+            tabindex="0"
+            aria-pressed="false"
+            aria-label="Strict level: challenges claims, asks for numbers"
+          >
+            <div class="level-card__title">Strict</div>
+            <div class="level-card__desc">Challenges claims and asks for evidence.</div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Number of questions -->
+      <section class="questions-section" aria-labelledby="questions-heading">
+        <div class="questions-row">
+          <label id="questions-heading" for="questions-count" class="questions-label">
+            Number of questions
+          </label>
+          <input
+            id="questions-count"
+            type="range"
+            min="1"
+            max="15"
+            value="5"
+            aria-valuemin="1"
+            aria-valuemax="15"
+            aria-valuenow="5"
+            aria-label="Number of questions"
+          />
+          <output id="questions-display" for="questions-count" class="questions-value">5</output>
+        </div>
+      </section>
+
+      <!-- Footer actions -->
+      <div class="start-footer">
+        <div class="start-actions">
+          <button id="btn-start" class="btn btn--primary btn--lg" disabled data-loading-text="Starting...">
+            Start practice
+          </button>
+          <button id="btn-mic-check" class="btn btn--secondary btn--sm">
+            Check microphone
+          </button>
+        </div>
+        <p class="privacy-note">
+          Your report is used only for this session. Do not upload confidential material.
+        </p>
+      </div>
+
+    </div><!-- /container -->
+
+    <!-- Mic check overlay -->
+    <div id="mic-check-overlay" class="mic-check-overlay" hidden role="dialog" aria-labelledby="mic-check-title" aria-modal="true">
+      <div class="mic-check-card">
+        <h3 id="mic-check-title">Microphone check</h3>
+        <p>Speak a few words and watch the level meter.</p>
+        <div class="mic-meter-track" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100">
+          <div id="mic-meter-fill" class="mic-meter-fill"></div>
+        </div>
+        <button id="btn-mic-check-close" class="btn btn--secondary">Done</button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SCREEN 2 — SESSION
+       ═══════════════════════════════════════════════════════════ -->
+  <main data-screen="session" class="screen session-screen" hidden>
+
+    <!-- Top bar -->
+    <header class="session-topbar">
+      <span id="question-counter" class="question-counter" aria-live="polite">Question 1 of 5</span>
+      <span id="level-badge" class="level-badge level-badge--normal">Normal</span>
+      <button id="btn-end-session" class="btn btn--ghost btn--sm btn--danger">End session</button>
+    </header>
+
+    <div class="session-body">
+
+      <!-- Examiner presence -->
+      <div class="presence-wrapper" aria-live="polite">
+        <div
+          id="presence"
+          class="presence presence--idle"
+          role="img"
+          aria-label="Examiner is ready"
+        ></div>
+        <span id="presence-label" class="presence-label">Ready</span>
+      </div>
+
+      <!-- Current question -->
+      <div class="question-area" aria-live="polite">
+        <span id="question-type-badge" class="question-type-badge" hidden></span>
+        <p id="question-text" class=""></p>
+      </div>
+
+      <!-- Error (session-level) -->
+      <div id="session-error-box" hidden role="alert" aria-live="assertive" style="width:100%">
+        <span id="session-error-message"></span>
+        <button id="btn-retry-session-error" class="btn btn--sm btn--secondary" hidden>Retry</button>
+      </div>
+
+      <!-- Nudge box -->
+      <div id="nudge-box" hidden aria-live="polite" style="width:100%">
+        <p id="nudge-text"></p>
+        <div id="nudge-actions" hidden>
+          <button id="btn-rephrase" class="btn btn--secondary btn--sm">Rephrase question</button>
+          <button id="btn-skip" class="btn btn--ghost btn--sm">Skip this question</button>
+        </div>
+      </div>
+
+      <!-- Live transcript -->
+      <div class="transcript-panel">
+        <p class="transcript-heading">Your answer</p>
+        <div
+          id="live-transcript"
+          class="live-transcript"
+          role="log"
+          aria-live="polite"
+          aria-label="Live transcript of your answer"
+        >
+          <span class="transcript-final"></span><span class="transcript-interim"></span>
+        </div>
+        <p id="countdown-hint" class="countdown-hint" hidden aria-live="assertive"></p>
+      </div>
+
+      <!-- Evaluation chip -->
+      <div id="eval-chip" class="eval-chip" hidden aria-live="polite"></div>
+
+      <!-- Controls -->
+      <div class="controls">
+
+        <!-- Voice controls -->
+        <div id="voice-controls" class="voice-controls">
+          <button
+            id="btn-mic"
+            class="mic--active"
+            aria-pressed="true"
+            title="Mute microphone"
+            aria-label="Mute microphone"
+          >&#127908;</button>
+
+          <button id="btn-done" class="btn btn--primary" disabled data-loading-text="Sending...">
+            I'm done answering
+          </button>
+
+          <button id="btn-repeat" class="btn btn--secondary btn--sm" disabled>
+            Repeat question
+          </button>
+
+          <button id="btn-type-instead" class="btn btn--ghost btn--sm" disabled>
+            Type instead
+          </button>
+        </div>
+
+        <!-- Typing panel (shown when voice unavailable or "Type instead" clicked) -->
+        <div id="typing-panel" class="typing-panel" hidden>
+          <div class="typing-notice">
+            Voice is not available in this browser. Type your answer below.
+            Chrome works best for voice.
+          </div>
+          <label for="type-answer" class="sr-only">Type your answer</label>
+          <textarea
+            id="type-answer"
+            rows="4"
+            placeholder="Type your answer here..."
+            maxlength="6000"
+          ></textarea>
+          <div class="typing-actions">
+            <button id="btn-type-submit" class="btn btn--primary" data-loading-text="Sending...">
+              Submit answer
+            </button>
+            <button id="btn-repeat-type" class="btn btn--secondary btn--sm">
+              Repeat question
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Collapsible answer history -->
+      <section class="history-section">
+        <details class="history-details">
+          <summary>Previous questions</summary>
+          <div id="history-list" role="log" aria-label="Previous questions and answers"></div>
+        </details>
+      </section>
+
+    </div><!-- /session-body -->
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SCREEN 3 — FEEDBACK
+       ═══════════════════════════════════════════════════════════ -->
+  <main data-screen="feedback" class="screen feedback-screen" hidden>
+    <div class="container">
+
+      <header class="feedback-header">
+        <h1>How it went</h1>
+        <p>A summary of your practice session.</p>
+      </header>
+
+      <!-- Summary cards -->
+      <section aria-labelledby="summary-heading">
+        <h2 id="summary-heading" class="sr-only">Session summary</h2>
+        <div id="feedback-summary"></div>
+      </section>
+
+      <!-- Per-question breakdown -->
+      <section class="per-question-section" aria-labelledby="perq-heading">
+        <h2 id="perq-heading">Question by question</h2>
+        <div id="feedback-per-question"></div>
+      </section>
+
+      <!-- Weak topics -->
+      <section id="feedback-weak-topics" hidden aria-labelledby="weak-heading">
+        <h2 id="weak-heading" class="sr-only">Weak topics</h2>
+      </section>
+
+      <!-- Suggestions -->
+      <section id="feedback-suggestions" hidden aria-labelledby="sugg-heading">
+        <h2 id="sugg-heading" class="sr-only">Suggestions</h2>
+      </section>
+
+      <!-- Disclaimer -->
+      <p id="feedback-disclaimer"></p>
+
+      <!-- Actions -->
+      <div class="feedback-actions">
+        <button id="btn-download-transcript" class="btn btn--secondary" data-loading-text="Downloading...">
+          Download transcript
+        </button>
+        <button id="btn-try-level" class="btn btn--secondary">
+          Try another level
+        </button>
+        <button id="btn-practise-again" class="btn btn--primary">
+          Practise again
+        </button>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ── Scripts (ES modules) ─────────────────────────────────────────────── -->
+  <script type="module" src="app.js"></script>
+
+  <!-- Sync the range slider display value -->
+  <script>
+    const slider = document.getElementById('questions-count');
+    const display = document.getElementById('questions-display');
+    if (slider && display) {
+      slider.addEventListener('input', () => {
+        display.textContent = slider.value;
+        slider.setAttribute('aria-valuenow', slider.value);
+      });
+    }
+  </script>
+
+</body>
+</html>
