@@ -290,9 +290,7 @@ function wireSessionControls() {
   // Skip question
   document.getElementById('btn-skip')?.addEventListener('click', () => {
     if (state.current === 'asking' && !state.submitting) {
-      const ta = document.getElementById('answer-text');
-      if (ta) ta.value = '';
-      submitAnswer('(skipped)');
+      handleSkipQuestion();
     }
   });
 }
@@ -328,8 +326,7 @@ function askCurrentQuestion(questionType) {
 async function handleHintRequest() {
   const btnHint = document.getElementById('btn-hint');
   if (btnHint && btnHint.dataset.isSkip === 'true') {
-    // If transformed into skip, execute skip
-    submitAnswer('(skipped)');
+    handleSkipQuestion();
     return;
   }
 
@@ -366,12 +363,53 @@ function resetHintButton() {
   }
 }
 
-async function submitAnswer(overrideText = null) {
+async function handleSkipQuestion() {
+  if (state.submitting) return;
+  state.submitting = true;
+
+  setSessionButtonsDisabled(true);
+  const ta = document.getElementById('answer-text');
+  if (ta) {
+    ta.value = '';
+    ta.disabled = true;
+  }
+
+  // Add turn to history list as skipped
+  ui.addHistoryTurn(state.currentQuestion.text, '[Skipped]', 'skipped');
+
+  transition('thinking');
+  ui.setPresenceState('thinking');
+  ui.hideEvalChip();
+  ui.hideNudge();
+
+  try {
+    const result = await api.skipTurn(state.sessionId, state.currentQuestion.id);
+
+    state.submitting = false;
+
+    if (result.next.type === 'end') {
+      await endSession();
+    } else {
+      state.questionNumber += 1;
+      state.currentQuestion = result.next.question;
+      state.pendingAnswer = null;
+      askCurrentQuestion(result.next.type);
+    }
+  } catch (err) {
+    state.submitting = false;
+    ui.setPresenceState('idle');
+    setSessionButtonsDisabled(false);
+    if (ta) ta.disabled = false;
+    handleApiError(err, { context: 'session' });
+  }
+}
+
+async function submitAnswer() {
   if (state.submitting) return;
   state.submitting = true;
 
   const ta = document.getElementById('answer-text');
-  let answerText = overrideText !== null ? overrideText : (ta ? ta.value.trim() : '');
+  let answerText = ta ? ta.value.trim() : '';
 
   // Confirm if blank
   if (!answerText) {

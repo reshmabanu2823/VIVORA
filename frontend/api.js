@@ -72,6 +72,25 @@ const MOCK_RESPONSES = {
           },
     };
   },
+  skip: (qid) => {
+    _mockTurnCount++;
+    const isLast = _mockTurnCount >= 5;
+    const nextSec = _mockSections[_mockTurnCount % _mockSections.length];
+    return {
+      evaluation: {
+        verdict: null,
+        covered: [],
+        missed: [],
+        status: 'skipped',
+      },
+      next: isLast
+        ? { type: 'end', question: null }
+        : {
+            type: 'new_topic',
+            question: _makeMockQuestion(nextSec, qid + 1),
+          },
+    };
+  },
   nudge: (n) => ({
     text: n >= 2 ? 'Consider explaining what the section aims to solve first.' : 'Try outlining the main design choice made here.',
     offer_skip: n >= 2,
@@ -79,6 +98,9 @@ const MOCK_RESPONSES = {
   feedback: {
     summary: {
       questions: 5,
+      questions_asked: 5,
+      questions_answered: 5,
+      questions_skipped: 0,
       level: 'normal',
     },
     per_question: _mockSections.slice(0, 5).map((sec, i) => {
@@ -86,6 +108,7 @@ const MOCK_RESPONSES = {
       return {
         question: qObj.text,
         section: sec.title,
+        status: 'answered',
         verdict: ['strong', 'partial', 'weak', 'strong', 'partial'][i],
         covered: ['main idea', 'system design'],
         missed: i % 2 ? ['performance data', 'comparison to alternatives'] : [],
@@ -205,6 +228,25 @@ export async function submitTurn(sessionId, questionId, answer) {
       duration_sec: 0,
       first_speech_delay_sec: null,
       input_mode: 'typed',
+      status: 'answered',
+    }),
+  });
+}
+
+/**
+ * Skip the current question without submitting an answer.
+ * @param {string} sessionId
+ * @param {number} questionId Must match the current question's id.
+ * @returns {Promise<{evaluation, next}>}
+ */
+export async function skipTurn(sessionId, questionId) {
+  if (MOCK_MODE) return MOCK_RESPONSES.skip(questionId);
+  return apiJSON('/skip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      question_id: questionId,
     }),
   });
 }

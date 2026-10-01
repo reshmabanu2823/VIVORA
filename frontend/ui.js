@@ -102,6 +102,7 @@ const VERDICT_LABELS = {
   strong:  { text: 'Solid answer', cls: 'verdict--strong' },
   partial: { text: 'Partly there', cls: 'verdict--partial' },
   weak:    { text: 'Needs more detail', cls: 'verdict--weak' },
+  skipped: { text: 'Skipped', cls: 'verdict--skipped' },
 };
 
 /**
@@ -132,6 +133,11 @@ export function addHistoryTurn(question, answer, verdict) {
 export function showEvalChip(evaluation) {
   const chip = document.getElementById('eval-chip');
   if (!chip) return;
+
+  if (!evaluation || !evaluation.verdict) {
+    chip.hidden = true;
+    return;
+  }
 
   const v = VERDICT_LABELS[evaluation.verdict] || VERDICT_LABELS.partial;
   const vCls = evaluation.verdict === 'strong' ? 'verdict--strong'
@@ -208,15 +214,29 @@ export function showFeedback(data) {
   const screen = document.querySelector('[data-screen="feedback"]');
   if (!screen) return;
 
-  const s = data.summary;
+  const s = data.summary || {};
+  const perQ = data.per_question || [];
 
-  // Build summary cards (only questions answered card in text-only mode)
+  // Derive counts using status as mandated by Requirement 9
+  const answeredCount = s.questions_answered ?? perQ.filter(t => t.status === 'answered').length;
+  const skippedCount = s.questions_skipped ?? perQ.filter(t => t.status === 'skipped').length;
+  const askedCount = s.questions_asked ?? perQ.length;
+
+  // Build summary cards
   const summaryEl = screen.querySelector('#feedback-summary');
   if (summaryEl) {
     summaryEl.innerHTML = `
       <div class="summary-card">
-        <span class="card-value">${s.questions}</span>
+        <span class="card-value">${askedCount}</span>
+        <span class="card-label">Questions asked</span>
+      </div>
+      <div class="summary-card">
+        <span class="card-value">${answeredCount}</span>
         <span class="card-label">Questions answered</span>
+      </div>
+      <div class="summary-card">
+        <span class="card-value stat--skipped">${skippedCount}</span>
+        <span class="card-label">Questions skipped</span>
       </div>
     `;
   }
@@ -224,11 +244,12 @@ export function showFeedback(data) {
   // Per-question list
   const perQEl = screen.querySelector('#feedback-per-question');
   if (perQEl) {
-    perQEl.innerHTML = data.per_question.map((q, i) => {
-      const v = VERDICT_LABELS[q.verdict] || VERDICT_LABELS.partial;
-      const vCls = q.verdict === 'strong' ? 'verdict--strong' : q.verdict === 'weak' ? 'verdict--weak' : 'verdict--partial';
+    perQEl.innerHTML = perQ.map((q, i) => {
+      const isSkipped = q.status === 'skipped';
+      const v = isSkipped ? VERDICT_LABELS.skipped : (VERDICT_LABELS[q.verdict] || VERDICT_LABELS.partial);
+      const vCls = isSkipped ? 'verdict--skipped' : (q.verdict === 'strong' ? 'verdict--strong' : q.verdict === 'weak' ? 'verdict--weak' : 'verdict--partial');
       return `
-        <details class="perq-item">
+        <details class="perq-item ${isSkipped ? 'perq-item--skipped' : ''}">
           <summary class="perq-summary">
             <span class="perq-num">Q${i + 1}</span>
             <span class="perq-q">${escapeHtml(q.question)}</span>
@@ -236,8 +257,9 @@ export function showFeedback(data) {
           </summary>
           <div class="perq-detail">
             <p class="perq-section">Section: ${escapeHtml(q.section)}</p>
-            ${q.covered && q.covered.length ? `<p class="perq-covered">Covered: ${q.covered.map(escapeHtml).join(', ')}</p>` : ''}
-            ${q.missed && q.missed.length ? `<p class="perq-missed">Could mention: ${q.missed.map(escapeHtml).join(', ')}</p>` : ''}
+            ${isSkipped ? '<p class="perq-skipped-note"><em>Question was skipped (not answered).</em></p>' : ''}
+            ${!isSkipped && q.covered && q.covered.length ? `<p class="perq-covered">Covered: ${q.covered.map(escapeHtml).join(', ')}</p>` : ''}
+            ${!isSkipped && q.missed && q.missed.length ? `<p class="perq-missed">Could mention: ${q.missed.map(escapeHtml).join(', ')}</p>` : ''}
           </div>
         </details>
       `;

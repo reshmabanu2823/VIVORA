@@ -578,6 +578,7 @@ input[type="range"] {
 .verdict--strong  { background: var(--strong-bg);  color: var(--strong-text); }
 .verdict--partial { background: var(--partial-bg); color: var(--partial-text); }
 .verdict--weak    { background: var(--weak-bg);    color: var(--weak-text); }
+.verdict--skipped { background: #E8ECEF;           color: #55606E; }
 
 /* ── Answer input panel ──────────────────────────────────────────────────── */
 .answer-panel {
@@ -715,10 +716,10 @@ details.history-details[open] summary::before { transform: rotate(90deg); }
 /* Summary cards */
 #feedback-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: var(--space-md);
   margin-bottom: var(--space-2xl);
-  max-width: 320px;
+  max-width: 600px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -741,6 +742,7 @@ details.history-details[open] summary::before { transform: rotate(90deg); }
 .card-value.pace--slow  { color: var(--partial-text); }
 .card-value.pace--ok    { color: var(--strong-text); }
 .card-value.pace--fast  { color: var(--weak-text); }
+.card-value.stat--skipped { color: var(--ink-muted); }
 .card-label { font-size: var(--text-sm); color: var(--ink-muted); font-weight: 500; }
 .card-sub   { font-size: var(--text-xs); color: var(--ink-light); }
 
@@ -791,6 +793,8 @@ details.history-details[open] summary::before { transform: rotate(90deg); }
 .perq-missed   { color: var(--weak-text); }
 .perq-pace,
 .perq-fillers  { color: var(--ink-muted); }
+.perq-item--skipped { opacity: 0.9; }
+.perq-skipped-note  { color: var(--ink-muted); font-size: var(--text-sm); font-style: italic; }
 
 /* Weak topics + suggestions */
 #feedback-weak-topics,

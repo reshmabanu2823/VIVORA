@@ -256,3 +256,115 @@ def test_two_different_reports_produce_grounded_distinct_questions():
     assert next_q["evidence"] in REPORT_DRONE
     assert next_q["evidence"] not in REPORT_ZK_HEALTH
 
+
+def test_three_answered_two_skipped_counts_and_status():
+    up = _upload(REPORT_DRONE)
+    r = client.post("/session", json={"upload_id": up["upload_id"], "num_questions": 5})
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+    q = r.json()["question"]
+    assert q["status"] == "unanswered"
+
+    # Turn 1: answered
+    r1 = client.post("/turn", json={"session_id": sid, "question_id": q["id"], "answer": "We used LeGO-LOAM for LiDAR SLAM."})
+    assert r1.status_code == 200
+    assert r1.json()["evaluation"]["status"] == "answered"
+    q = r1.json()["next"]["question"]
+
+    # Turn 2: skipped via POST /skip
+    r2 = client.post("/skip", json={"session_id": sid, "question_id": q["id"]})
+    assert r2.status_code == 200
+    assert r2.json()["evaluation"]["status"] == "skipped"
+    assert r2.json()["evaluation"]["verdict"] is None
+    assert r2.json()["evaluation"]["covered"] == []
+    assert r2.json()["evaluation"]["missed"] == []
+    assert r2.json()["next"]["type"] == "new_topic"  # skipped questions never produce follow-ups
+    q = r2.json()["next"]["question"]
+
+    # Turn 3: answered
+    r3 = client.post("/turn", json={"session_id": sid, "question_id": q["id"], "answer": "We used GTSAM for factor graph optimization."})
+    assert r3.status_code == 200
+    q = r3.json()["next"]["question"]
+
+    # Turn 4: skipped via POST /turn with status: "skipped"
+    r4 = client.post("/turn", json={"session_id": sid, "question_id": q["id"], "status": "skipped"})
+    assert r4.status_code == 200
+    assert r4.json()["evaluation"]["status"] == "skipped"
+    q = r4.json()["next"]["question"]
+
+    # Turn 5: answered
+    r5 = client.post("/turn", json={"session_id": sid, "question_id": q["id"], "answer": "The cavern trials confirmed low trajectory error."})
+    assert r5.status_code == 200
+    assert r5.json()["next"]["type"] == "end"
+
+    # Feedback verification
+    fb = client.post("/feedback", json={"session_id": sid}).json()
+    summary = fb["summary"]
+    assert summary["questions_asked"] == 5
+    assert summary["questions_answered"] == 3
+    assert summary["questions_skipped"] == 2
+    assert summary["questions"] == 3  # Questions answered must NOT count skipped questions!
+
+    per_q = fb["per_question"]
+    assert len(per_q) == 5
+    answered_turns = [t for t in per_q if t["status"] == "answered"]
+    skipped_turns = [t for t in per_q if t["status"] == "skipped"]
+    assert len(answered_turns) == 3
+    assert len(skipped_turns) == 2
+    for t in skipped_turns:
+        assert t["verdict"] is None
+        assert t["covered"] == []
+        assert t["missed"] == []
+
+
+def test_skipped_turn_transcript_and_weak_topics_exclusion():
+    up = _upload(REPORT_DRONE)
+    r = client.post("/session", json={"upload_id": up["upload_id"], "num_questions": 2})
+    sid = r.json()["session_id"]
+    q1 = r.json()["question"]
+    q1_sec = q1["section_title"]
+
+    # Skip Q1
+    r_skip = client.post("/skip", json={"session_id": sid, "question_id": q1["id"]})
+    assert r_skip.status_code == 200
+    q2 = r_skip.json()["next"]["question"]
+
+    # Answer Q2 strongly
+    r_ans = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q2["id"],
+        "answer": "We implemented ground plane segmentation and edge extraction with LeGO-LOAM."
+    })
+    assert r_ans.status_code == 200
+    assert r_ans.json()["next"]["type"] == "end"
+
+    # Transcript must contain [SKIPPED]
+    transcript_resp = client.get(f"/session/{sid}/transcript")
+    assert transcript_resp.status_code == 200
+    t_text = transcript_resp.text
+    assert "[SKIPPED]" in t_text
+    assert "Status: Skipped" in t_text
+
+    # Skipped section must NOT appear in weak_topics
+    fb = client.post("/feedback", json={"session_id": sid}).json()
+    assert q1_sec not in fb["weak_topics"]
+
+
+def test_duplicate_turn_or_skip_prevented():
+    up = _upload(REPORT_DRONE)
+    r = client.post("/session", json={"upload_id": up["upload_id"], "num_questions": 3})
+    sid = r.json()["session_id"]
+    qid = r.json()["question"]["id"]
+
+    # Skip question once
+    r1 = client.post("/skip", json={"session_id": sid, "question_id": qid})
+    assert r1.status_code == 200
+
+    # Rapid second skip or turn on same question_id must be rejected
+    r2 = client.post("/skip", json={"session_id": sid, "question_id": qid})
+    assert r2.status_code == 400
+
+    r3 = client.post("/turn", json={"session_id": sid, "question_id": qid, "answer": "trying again"})
+    assert r3.status_code == 400
+
+
