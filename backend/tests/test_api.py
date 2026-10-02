@@ -371,3 +371,80 @@ def test_duplicate_turn_or_skip_prevented():
     assert r3.status_code == 400
 
 
+def test_project_defense_unsupported_claim_and_weak_points():
+    up = _upload(REPORT_DRONE)
+    r = client.post("/session", json={"upload_id": up["upload_id"], "level": "defense", "num_questions": 3})
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+    q1 = r.json()["question"]
+    assert q1["evidence"] in REPORT_DRONE
+
+    # Turn 1: student makes an unsupported claim ("faster" without numbers or comparative baseline)
+    r_turn1 = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q1["id"],
+        "answer": "Our system is much faster and scalable than standard approaches.",
+        "input_mode": "typed"
+    })
+    assert r_turn1.status_code == 200
+    ev1 = r_turn1.json()["evaluation"]
+    assert ev1["unsupported_claim"] is not None
+    assert "faster" in ev1["unsupported_claim"].lower() or "improvement" in ev1["unsupported_claim"].lower()
+    assert ev1["undefended_decision"] is not None
+    assert r_turn1.json()["next"]["type"] == "followup"
+
+    # Follow-up question challenges the unsupported claim directly
+    q2 = r_turn1.json()["next"]["question"]
+    assert "compare" in q2["text"].lower() or "measure" in q2["text"].lower() or "baseline" in q2["text"].lower()
+
+    # Turn 2: answer with quantitative metrics
+    r_turn2 = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q2["id"],
+        "answer": "We measured processing latency at 38 milliseconds per sweep across 12 subterranean cavern trials, achieving 4.2 centimeters trajectory error.",
+        "input_mode": "typed"
+    })
+    assert r_turn2.status_code == 200
+    q3 = r_turn2.json()["next"]["question"]
+
+    # Turn 3: finish session
+    r_turn3 = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q3["id"],
+        "answer": "GTSAM was utilized with custom odometry priors for non-linear factor graph optimization.",
+        "input_mode": "typed"
+    })
+    assert r_turn3.status_code == 200
+    assert r_turn3.json()["next"]["type"] == "end"
+
+    # Feedback verification
+    fb = client.post("/feedback", json={"session_id": sid}).json()
+    assert fb["summary"]["level"] == "defense"
+    assert "project_defense_weak_points" in fb
+    assert isinstance(fb["project_defense_weak_points"], list)
+    assert len(fb["project_defense_weak_points"]) >= 1
+
+
+def test_project_defense_chaining_and_grounding():
+    up = _upload(REPORT_ZK_HEALTH)
+    r = client.post("/session", json={"upload_id": up["upload_id"], "level": "defense", "num_questions": 4})
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+    q1 = r.json()["question"]
+    assert "Zero-Knowledge" in q1["section_title"] or "Smart Contract" in q1["section_title"] or "Benchmarks" in q1["section_title"]
+    assert q1["evidence"] in REPORT_ZK_HEALTH
+
+    # Turn 1
+    r1 = client.post("/turn", json={"session_id": sid, "question_id": q1["id"], "answer": "We picked Groth16 over BN254."})
+    assert r1.status_code == 200
+    q2 = r1.json()["next"]["question"]
+    assert q2["evidence"] in REPORT_ZK_HEALTH
+
+    # Turn 2
+    r2 = client.post("/turn", json={"session_id": sid, "question_id": q2["id"], "answer": "Circom compiles into R1CS constraint systems."})
+    assert r2.status_code == 200
+    q3 = r2.json()["next"]["question"]
+    assert q3["evidence"] in REPORT_ZK_HEALTH
+
+
+

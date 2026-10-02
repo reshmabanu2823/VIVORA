@@ -174,12 +174,15 @@ export function hideNudge() {
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
 
+// ── Progress bar ──────────────────────────────────────────────────────────────
+
 export function setProgress(current, total, level) {
   const counter = document.getElementById('question-counter');
   const levelBadge = document.getElementById('level-badge');
   if (counter) counter.textContent = `Question ${current} of ${total}`;
   if (levelBadge && level) {
-    levelBadge.textContent = level.charAt(0).toUpperCase() + level.slice(1);
+    const levelLabel = level === 'defense' ? 'Project Defense' : (level.charAt(0).toUpperCase() + level.slice(1));
+    levelBadge.textContent = levelLabel;
     levelBadge.className = `level-badge level-badge--${level}`;
   }
 }
@@ -260,10 +263,26 @@ export function showFeedback(data) {
             ${isSkipped ? '<p class="perq-skipped-note"><em>Question was skipped (not answered).</em></p>' : ''}
             ${!isSkipped && q.covered && q.covered.length ? `<p class="perq-covered">Covered: ${q.covered.map(escapeHtml).join(', ')}</p>` : ''}
             ${!isSkipped && q.missed && q.missed.length ? `<p class="perq-missed">Could mention: ${q.missed.map(escapeHtml).join(', ')}</p>` : ''}
+            ${q.unsupported_claim ? `<p class="perq-defense-claim"><strong>Unsupported claim flagged:</strong> ${escapeHtml(q.unsupported_claim)}</p>` : ''}
+            ${q.undefended_decision ? `<p class="perq-defense-undefended"><strong>Undefended decision:</strong> ${escapeHtml(q.undefended_decision)}</p>` : ''}
           </div>
         </details>
       `;
     }).join('');
+  }
+
+  // Project Defense Weak Points
+  const defenseEl = screen.querySelector('#feedback-defense-weak-points');
+  const defenseContentEl = screen.querySelector('#defense-weak-points-content');
+  if (defenseEl && data.project_defense_weak_points && data.project_defense_weak_points.length) {
+    if (defenseContentEl) {
+      defenseContentEl.innerHTML = `
+        <ul>${data.project_defense_weak_points.map(pt => `<li>${escapeHtml(pt)}</li>`).join('')}</ul>
+      `;
+    }
+    defenseEl.hidden = false;
+  } else if (defenseEl) {
+    defenseEl.hidden = true;
   }
 
   // Weak topics

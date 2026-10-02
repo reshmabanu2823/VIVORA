@@ -356,7 +356,7 @@ textarea::placeholder { color: var(--ink-light); }
 }
 .level-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-md);
 }
 .level-card {
@@ -453,6 +453,7 @@ input[type="range"] {
 .level-badge--warmup  { background: #EAF5EA; color: #2A6A2A; }
 .level-badge--normal  { background: var(--accent-light); color: var(--accent-text); }
 .level-badge--strict  { background: #FEF3E2; color: #7A5000; }
+.level-badge--defense { background: #FDE8E8; color: #9B1C1C; }
 
 /* Session body */
 .session-body {
@@ -794,7 +795,47 @@ details.history-details[open] summary::before { transform: rotate(90deg); }
 .perq-pace,
 .perq-fillers  { color: var(--ink-muted); }
 .perq-item--skipped { opacity: 0.9; }
-.perq-skipped-note  { color: var(--ink-muted); font-size: var(--text-sm); font-style: italic; }
+/* Project Defense Weak Points */
+.defense-weak-points-card {
+  background: #FFF5F5;
+  border: 1px solid #FED7D7;
+  border-left: 4px solid #E53E3E;
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+.defense-weak-points-card h2 {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: #C53030;
+  margin-bottom: var(--space-sm);
+}
+.defense-weak-points-card ul {
+  padding-left: var(--space-lg);
+  margin: 0;
+}
+.defense-weak-points-card li {
+  font-size: var(--text-sm);
+  color: #742A2A;
+  line-height: 1.5;
+  margin-bottom: var(--space-xs);
+}
+
+.perq-defense-claim {
+  color: #C53030;
+  font-size: var(--text-xs);
+  background: #FFF5F5;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #E53E3E;
+  margin-top: var(--space-xs);
+}
+.perq-defense-undefended {
+  color: #9B2C2C;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  margin-top: 2px;
+}
 
 /* Weak topics + suggestions */
 #feedback-weak-topics,

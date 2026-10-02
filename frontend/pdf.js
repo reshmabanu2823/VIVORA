@@ -97,7 +97,7 @@ export function generateTranscriptPDF(feedback, state = {}) {
   const rawDate = summary.started_at || new Date().toISOString();
   const dateFormatted = rawDate.replace('T', ' ').slice(0, 16);
   const levelRaw = summary.level || state.level || 'normal';
-  const levelCap = levelRaw.charAt(0).toUpperCase() + levelRaw.slice(1);
+  const levelCap = levelRaw === 'defense' ? 'Project Defense' : (levelRaw.charAt(0).toUpperCase() + levelRaw.slice(1));
 
   const askedCount = summary.questions_asked ?? perQuestion.length;
   const answeredCount = summary.questions_answered ?? perQuestion.filter(q => q.status === 'answered').length;
@@ -195,9 +195,43 @@ export function generateTranscriptPDF(feedback, state = {}) {
         y += 1.5;
       }
 
+      // Defense notes (if flagged)
+      if (turn.unsupported_claim) {
+        printLine(`•  Unsupported claim: ${cleanText(turn.unsupported_claim)}`, marginX + 4, contentWidth - 4, 4.5, 'italic', [185, 28, 28], 9);
+        y += 1.5;
+      }
+      if (turn.undefended_decision) {
+        printLine(`•  Undefended decision: ${cleanText(turn.undefended_decision)}`, marginX + 4, contentWidth - 4, 4.5, 'italic', [146, 64, 14], 9);
+        y += 1.5;
+      }
+
       y += 3;
     }
   });
+
+  // ── Project Defense Weak Points Section (if present) ──────────────────────
+  const defensePoints = feedback.project_defense_weak_points || [];
+  if (defensePoints && defensePoints.length > 0) {
+    ensureSpace(40);
+    doc.setDrawColor(220, 38, 38);
+    doc.setLineWidth(0.6);
+    doc.line(marginX, y, marginX + contentWidth, y);
+    y += 8;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(153, 27, 27); // Dark red
+    doc.text('Project Defense Weak Points', marginX, y);
+    y += 6.5;
+
+    printLine('Implementation decisions, trade-offs, and claims the student was unable to adequately defend:', marginX + 2, contentWidth - 2, 4.8, 'italic', [100, 116, 139], 9);
+    y += 2;
+
+    for (const pt of defensePoints) {
+      printLine(`•  ${cleanText(pt)}`, marginX + 4, contentWidth - 4, 4.8, 'normal', [153, 27, 27], 9.5);
+    }
+    y += 4;
+  }
 
   // ── Session Feedback Section ───────────────────────────────────────────────
   ensureSpace(45);

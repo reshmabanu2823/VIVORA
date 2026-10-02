@@ -115,6 +115,10 @@ const MOCK_RESPONSES = {
       };
     }),
     weak_topics: ['Methodology', 'Results analysis'],
+    project_defense_weak_points: [
+      'Performance evaluation: Claimed 42% latency reduction without documenting comparative hardware baselines.',
+      'Implementation trade-offs: Did not justify choosing zero-copy queues over standard POSIX message channels.'
+    ],
     suggestions: [
       'Include specific figures or metrics from your results when addressing evaluation questions.',
       'Clearly justify why you chose your methodology over alternatives.',
@@ -195,7 +199,7 @@ export async function uploadText(text) {
 /**
  * Create a new practice session.
  * @param {string} uploadId
- * @param {'warmup'|'normal'|'strict'} level
+ * @param {'warmup'|'normal'|'strict'|'defense'} level
  * @param {number} numQuestions
  * @returns {Promise<{session_id, question, silence_nudge_seconds}>}
  */

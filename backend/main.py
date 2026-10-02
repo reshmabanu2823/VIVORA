@@ -22,7 +22,7 @@ log = logging.getLogger("vivora")
 app = FastAPI(title="VIVORA", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[config.FRONTEND_ORIGIN], allow_methods=["*"], allow_headers=["*"])
 
-Level = Literal["warmup", "normal", "strict"]
+Level = Literal["warmup", "normal", "strict", "defense"]
 FALLBACK_NUDGES = ["Start with what this part of the project does.",
                    "Take your time. Begin with the problem it solves."]
 DISCLAIMER = "Practice feedback only. It is not an official grade."
@@ -181,7 +181,8 @@ def _validate_question(q_data: dict, section: dict) -> tuple[bool, str]:
 
 async def _generate_question(s: dict, section: dict, is_followup: bool = False,
                              history: list[dict] | None = None,
-                             missed_points: list[str] | None = None) -> dict:
+                             missed_points: list[str] | None = None,
+                             unsupported_claim: str | None = None) -> dict:
     """Generate a question requiring structured JSON with evidence, validated against the excerpt."""
     level = s["level"]
     sys_p = prompts.system_prompt(level)
@@ -192,7 +193,9 @@ async def _generate_question(s: dict, section: dict, is_followup: bool = False,
         asked=s["all_questions"],
         is_followup=is_followup,
         history=history,
-        missed_points=missed_points
+        missed_points=missed_points,
+        level=level,
+        unsupported_claim=unsupported_claim
     )
 
     last_err = ""
@@ -235,10 +238,14 @@ def _clean_eval(raw: dict | None) -> dict:
     raw = raw or {}
     verdict = raw.get("verdict") if raw.get("verdict") in ("strong", "partial", "weak") else "partial"
     as_list = lambda v: [str(x) for x in v][:6] if isinstance(v, list) else []
+    unsupported_claim = str(raw["unsupported_claim"]).strip() if raw.get("unsupported_claim") else None
+    undefended_decision = str(raw["undefended_decision"]).strip() if raw.get("undefended_decision") else None
     return {
         "verdict": verdict,
         "covered": as_list(raw.get("covered")),
         "missed": as_list(raw.get("missed")),
+        "unsupported_claim": unsupported_claim,
+        "undefended_decision": undefended_decision,
         "next_type": raw.get("next_type") if raw.get("next_type") in ("followup", "new_topic") else "new_topic"
     }
 
@@ -307,7 +314,8 @@ async def create_session(body: SessionIn):
 
     s = {"sections": sections, "level": body.level, "num_questions": body.num_questions, "turns": [],
          "asked_sections": [], "all_questions": [], "next_qid": 1, "topic_followups": 0, "current": None,
-         "finished": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "nudges": {}, "feedback": None}
+         "finished": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "nudges": {}, "feedback": None,
+         "undefended_decisions": []}
 
     opening_sec = _pick_opening_section(sections)
     try:
@@ -353,12 +361,16 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 "fillers": {"total": 0, "by_word": {}},
                 "verdict": None,
                 "covered": [],
-                "missed": []
+                "missed": [],
+                "unsupported_claim": None,
+                "undefended_decision": None
             })
             evaluation = {
                 "verdict": None,
                 "covered": [],
                 "missed": [],
+                "unsupported_claim": None,
+                "undefended_decision": None,
                 "status": "skipped"
             }
             s["topic_followups"] = 0
@@ -383,12 +395,16 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                         section["title"], section["text"],
                         [t for t in s["turns"] if t.get("status") == "answered"][-3:],
                         cur["text"], clean_answer,
-                        s["topic_followups"], max_f
+                        s["topic_followups"], max_f,
+                        level=s["level"]
                     )
                 )
             except llm.LLMError as e:
                 raise _llm_error(e)
             ev = _clean_eval(raw)
+
+            if ev.get("undefended_decision") and s["level"] == "defense":
+                s.setdefault("undefended_decisions", []).append(ev["undefended_decision"])
 
             voice = input_mode == "voice"
             wpm = metrics.words_per_minute(clean_answer, duration_sec) if voice else None
@@ -405,24 +421,29 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 "input_mode": input_mode,
                 "wpm": wpm,
                 "fillers": metrics.count_fillers(clean_answer),
+                "unsupported_claim": ev.get("unsupported_claim"),
+                "undefended_decision": ev.get("undefended_decision"),
                 **{k: ev[k] for k in ("verdict", "covered", "missed")}
             })
 
-            evaluation = {k: ev[k] for k in ("verdict", "covered", "missed")}
+            evaluation = {k: ev[k] for k in ("verdict", "covered", "missed", "unsupported_claim", "undefended_decision")}
             evaluation["status"] = "answered"
 
             if len(s["turns"]) >= s["num_questions"]:
                 s["finished"], s["current"] = True, None
                 return {"evaluation": evaluation, "next": {"type": "end", "question": None}}
 
-            want_follow = (ev["next_type"] == "followup" and ev["verdict"] != "strong" and s["topic_followups"] < max_f)
+            want_follow = ((ev["next_type"] == "followup" or ev.get("unsupported_claim"))
+                           and (ev["verdict"] != "strong" or ev.get("unsupported_claim"))
+                           and s["topic_followups"] < max_f)
             try:
                 if want_follow:
                     s["topic_followups"] += 1
                     q = await _generate_question(
                         s, section, is_followup=True,
                         history=[t for t in s["turns"] if t.get("status") == "answered"][-3:],
-                        missed_points=ev["missed"]
+                        missed_points=ev["missed"],
+                        unsupported_claim=ev.get("unsupported_claim")
                     )
                     kind = "followup"
                 else:
@@ -509,12 +530,14 @@ async def feedback(body: FeedbackIn):
     if answered:
         transcript_for_ai = "\n\n".join(
             f"[{t['section_title']}] Q: {t['question']}\nA: {t['answer']}\nCovered: {t['covered']}\nMissed: {t['missed']}"
+            + (f"\nUnsupported Claim: {t['unsupported_claim']}" if t.get("unsupported_claim") else "")
+            + (f"\nUndefended Decision: {t['undefended_decision']}" if t.get("undefended_decision") else "")
             for t in answered
         )
         try:
             summary_ai = await llm.complete_json(
                 prompts.system_prompt(s["level"]),
-                prompts.feedback_prompt(s["level"], transcript_for_ai)
+                prompts.feedback_prompt(s["level"], transcript_for_ai, s.get("undefended_decisions", []))
             )
         except llm.LLMError as e:
             log.warning("Feedback LLM failed, using fallback: %s", e)
@@ -525,6 +548,27 @@ async def feedback(body: FeedbackIn):
         weak_topics = list(dict.fromkeys(t["section_title"] for t in answered if t.get("verdict") in ("weak", "partial")))[:3]
 
     suggestions = [str(x) for x in summary_ai.get("suggestions", [])][:3] if isinstance(summary_ai.get("suggestions"), list) else []
+
+    defense_weak_points = None
+    if s["level"] == "defense":
+        raw_pts = summary_ai.get("project_defense_weak_points", [])
+        if isinstance(raw_pts, list) and raw_pts:
+            defense_weak_points = [str(x) for x in raw_pts][:4]
+        else:
+            candidates = []
+            for d in s.get("undefended_decisions", []):
+                if d and d not in candidates:
+                    candidates.append(f"Undefended implementation choice: {d}")
+            for t in answered:
+                claim = t.get("unsupported_claim")
+                if claim and claim not in candidates:
+                    candidates.append(f"Unsubstantiated claim on {t['section_title']}: {claim}")
+            defense_weak_points = candidates[:4]
+            if not defense_weak_points:
+                defense_weak_points = [
+                    "Benchmark comparisons: Stated performance or efficiency claims without comparative baselines.",
+                    "Implementation trade-offs: Did not fully defend architectural choices against alternatives."
+                ]
 
     report = {
         "summary": {
@@ -550,6 +594,8 @@ async def feedback(body: FeedbackIn):
                 "verdict": t.get("verdict"),
                 "covered": t.get("covered", []),
                 "missed": t.get("missed", []),
+                "unsupported_claim": t.get("unsupported_claim"),
+                "undefended_decision": t.get("undefended_decision"),
                 "wpm": t.get("wpm"),
                 "fillers": t.get("fillers", {}).get("by_word", {})
             }
@@ -557,6 +603,7 @@ async def feedback(body: FeedbackIn):
         ],
         "weak_topics": weak_topics,
         "suggestions": suggestions,
+        "project_defense_weak_points": defense_weak_points,
         "disclaimer": DISCLAIMER,
     }
     s["feedback"] = report

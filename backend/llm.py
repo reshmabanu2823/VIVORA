@@ -106,24 +106,47 @@ def _mock(system: str, user: str) -> str:
         m = re.search(r"\[(.*?)\]", user)
         if m and m.group(1).strip():
             topics = [m.group(1).strip()]
-        return json.dumps({
+        payload = {
             "weak_topics": topics[:2],
             "suggestions": [
                 "Quantify technical metrics and benchmark comparisons.",
                 "Explain the architectural trade-offs made in your implementation."
             ]
-        })
+        }
+        if "defense" in system.lower() or "project_defense_weak_points" in user:
+            payload["project_defense_weak_points"] = [
+                f"Implementation justification for {topics[0]}: Claimed performance improvements without citing baseline benchmark metrics.",
+                "Architectural trade-offs: Unable to defend technical choice against existing alternatives under edge conditions."
+            ]
+        return json.dumps(payload)
 
     # 2. Evaluation request
     if '"verdict"' in user:
         answer_part = user.split("Student's answer:", 1)[-1].split("\n", 1)[0]
         words = answer_part.strip().split()
         verdict = "strong" if len(words) > 35 else "partial" if len(words) > 10 else "weak"
+        unsupported_claim = None
+        undefended_decision = None
+
+        if "defense" in system.lower() or "project defense" in user.lower():
+            ans_lower = answer_part.lower()
+            trigger_words = ["faster", "better", "more efficient", "scalable", "superior"]
+            has_claim = any(w in ans_lower for w in trigger_words)
+            has_metrics = any(ch.isdigit() for ch in answer_part)
+            if has_claim and not has_metrics:
+                unsupported_claim = "Claimed system improvement without baseline comparison or measured metrics."
+                undefended_decision = "Performance comparison against baseline"
+                verdict = "weak" if verdict != "strong" else "partial"
+            elif verdict != "strong":
+                undefended_decision = "Technical justification and trade-offs"
+
         return json.dumps({
             "verdict": verdict,
             "covered": ["primary concept"],
             "missed": ["quantitative validation"] if verdict != "strong" else [],
-            "next_type": "followup" if verdict != "strong" else "new_topic"
+            "unsupported_claim": unsupported_claim,
+            "undefended_decision": undefended_decision,
+            "next_type": "followup" if (verdict != "strong" or unsupported_claim) else "new_topic"
         })
 
     # 3. Hint / nudge request
@@ -159,7 +182,6 @@ def _mock(system: str, user: str) -> str:
     # Extract a clean, verbatim phrase (3 to 8 words) from target_sentence as evidence
     words = target_sentence.split()
     if len(words) >= 4:
-        # Choose a meaningful phrase from the sentence
         start_idx = 0 if len(words) <= 7 else min(1, len(words) - 5)
         length = min(len(words) - start_idx, 6)
         phrase = " ".join(words[start_idx:start_idx + length])
@@ -168,18 +190,32 @@ def _mock(system: str, user: str) -> str:
 
     # Ensure phrase is an exact substring in excerpt
     if phrase not in excerpt:
-        # Fallback to direct slice
         phrase = excerpt[:min(len(excerpt), 40)].strip()
 
     # Determine question framing by level
     level = "normal"
     if "warmup" in system.lower():
         level = "warmup"
+    elif "defense" in system.lower():
+        level = "defense"
     elif "strict" in system.lower():
         level = "strict"
 
     if level == "warmup":
         question = f"In the {title} section, can you explain how '{phrase}' operates within your project?"
+    elif level == "defense":
+        if "unsupported claim" in user.lower():
+            question = f"What did you compare '{phrase}' against, and how did you measure that improvement?"
+        elif "previous question:" in user.lower():
+            chain_q = [
+                f"Why did you choose '{phrase}' for your system over existing alternatives?",
+                f"What concrete evidence or experimental results in your evaluation support '{phrase}'?",
+                f"What are the primary technical limitations of '{phrase}' under adverse conditions?",
+                f"What specific alternatives to '{phrase}' did you consider, and why were they rejected?"
+            ]
+            question = chain_q[already_count % len(chain_q)]
+        else:
+            question = f"In your implementation of '{phrase}', what alternative technologies existed and why was this chosen?"
     elif level == "strict":
         question = f"Your report states '{phrase}'. What specific quantitative evidence and trade-offs support this choice?"
     else:
