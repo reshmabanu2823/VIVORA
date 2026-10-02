@@ -105,6 +105,37 @@
         </div>
       </section>
 
+      <!-- Optional Project Source Code section -->
+      <section class="code-upload-section card" aria-labelledby="code-upload-heading">
+        <div class="code-upload-header">
+          <h2 id="code-upload-heading" class="code-upload-title">Project Source Code <span class="optional-tag">(Optional)</span></h2>
+          <p class="code-upload-desc">Upload your codebase (.zip or code file) to enable cross-verification against claims in your report and questions grounded in your implementation.</p>
+        </div>
+
+        <div
+          id="code-drop-zone"
+          class="drop-zone code-drop-zone"
+          role="button"
+          tabindex="0"
+          aria-label="Upload source code archive or file. Click or drag and drop a .zip, .py, .js, or other code file."
+        >
+          <span class="drop-zone-icon" aria-hidden="true">&#128187;</span>
+          <span id="code-drop-label" class="drop-label">
+            Drag and drop source code (.zip or files), or click to browse
+          </span>
+          <span class="drop-hint">.zip archive, .py, .js, .ts, etc. &nbsp;&middot;&nbsp; Max 10 MB</span>
+        </div>
+        <input
+          id="code-file-input"
+          type="file"
+          accept=".zip,.py,.js,.ts,.jsx,.tsx,.java,.cpp,.c,.cs,.go,.rs,.php,.rb,.html,.css"
+          class="sr-only"
+          aria-label="Upload code file or zip archive"
+        />
+
+        <div id="code-preview" hidden aria-live="polite"></div>
+      </section>
+
       <!-- Level selector -->
       <section class="level-section" aria-labelledby="level-heading">
         <span id="level-heading" class="level-section-label">Examiner level</span>
@@ -218,14 +249,20 @@
 
       <!-- Current question -->
       <div class="question-area" aria-live="polite">
-        <span id="question-type-badge" class="question-type-badge" hidden></span>
+        <div class="question-badges">
+          <span id="question-source-badge" class="source-badge source-badge--report" hidden>REPORT</span>
+          <span id="question-type-badge" class="question-type-badge" hidden></span>
+        </div>
         <h2 id="question-text" class="question-text"></h2>
       </div>
 
       <!-- Developer Grounding Debug Box -->
       <div id="grounding-debug" class="grounding-debug" aria-live="polite">
         <div class="grounding-debug__header">
-          <span class="grounding-debug__badge">GROUNDING DEBUG</span>
+          <div class="grounding-debug__badges">
+            <span class="grounding-debug__badge">GROUNDING DEBUG</span>
+            <span id="debug-source" class="grounding-debug__source-badge">SOURCE: REPORT</span>
+          </div>
           <span id="debug-section" class="grounding-debug__section">Section: --</span>
         </div>
         <div class="grounding-debug__body">
@@ -319,6 +356,12 @@
       <section id="feedback-defense-weak-points" class="defense-weak-points-card" hidden aria-labelledby="defense-weak-heading">
         <h2 id="defense-weak-heading">Project Defense Weak Points</h2>
         <div id="defense-weak-points-content"></div>
+      </section>
+
+      <!-- Cross-Verification Section (Report vs Code) -->
+      <section id="feedback-cross-verification" class="cross-verification-card" hidden aria-labelledby="cross-verif-heading">
+        <h2 id="cross-verif-heading">Cross-Verification (Report vs Source Code)</h2>
+        <div id="cross-verification-content"></div>
       </section>
 
       <!-- Weak topics -->

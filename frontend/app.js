@@ -22,6 +22,8 @@ const state = {
   // Upload
   uploadId: null,
   sections: [],
+  codeUploadId: null,
+  codeFiles: [],
 
   // Feedback & reports
   feedbackData: null,
@@ -157,6 +159,30 @@ function initStartScreen() {
     if (fileInput.files[0]) handleFileSelected(fileInput.files[0]);
   });
 
+  // Code drop zone & input
+  const codeFileInput = document.getElementById('code-file-input');
+  const codeDropZone = document.getElementById('code-drop-zone');
+  if (codeDropZone && codeFileInput) {
+    codeDropZone.addEventListener('dragover', e => { e.preventDefault(); codeDropZone.classList.add('drop-zone--hover'); });
+    codeDropZone.addEventListener('dragleave', () => codeDropZone.classList.remove('drop-zone--hover'));
+    codeDropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      codeDropZone.classList.remove('drop-zone--hover');
+      const file = e.dataTransfer.files[0];
+      if (file) handleCodeSelected(file);
+    });
+    codeDropZone.addEventListener('click', () => codeFileInput.click());
+    codeDropZone.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        codeFileInput.click();
+      }
+    });
+    codeFileInput.addEventListener('change', () => {
+      if (codeFileInput.files[0]) handleCodeSelected(codeFileInput.files[0]);
+    });
+  }
+
   // Paste text
   pasteArea.addEventListener('input', () => {
     const words = pasteArea.value.trim().split(/\s+/).filter(Boolean).length;
@@ -169,6 +195,27 @@ function initStartScreen() {
 
   // Start button
   btnStart.addEventListener('click', handleStart);
+}
+
+async function handleCodeSelected(file) {
+  const codeDropLabel = document.getElementById('code-drop-label');
+  if (file.size > 10 * 1024 * 1024) {
+    ui.showError('Code file too large. Maximum size is 10 MB.', { context: 'start' });
+    return;
+  }
+
+  if (codeDropLabel) codeDropLabel.textContent = `Uploading ${file.name}...`;
+
+  try {
+    const result = await api.uploadCodeFile(file);
+    state.codeUploadId = result.code_upload_id;
+    state.codeFiles = result.files || [];
+    ui.showCodeFiles(result.files || [], result.total_files || result.files?.length || 1);
+    if (codeDropLabel) codeDropLabel.textContent = `${file.name} — indexed (${result.total_files || result.files?.length || 1} files)`;
+  } catch (err) {
+    if (codeDropLabel) codeDropLabel.textContent = 'Code upload failed. Try another archive or file.';
+    handleApiError(err, { context: 'start' });
+  }
 }
 
 async function handleFileSelected(file) {
@@ -234,7 +281,7 @@ async function handleStart() {
       }
     }
 
-    const session = await api.createSession(state.uploadId, state.level, state.numQuestions);
+    const session = await api.createSession(state.uploadId, state.level, state.numQuestions, state.codeUploadId);
     state.sessionId = session.session_id;
     state.currentQuestion = session.question;
     state.questionNumber = 1;
@@ -568,6 +615,9 @@ function startOver(keepUpload = false) {
   if (!keepUpload) {
     state.uploadId = null;
     state.sections = [];
+    state.codeUploadId = null;
+    state.codeFiles = [];
+    ui.hideCodeFiles();
   }
   state.sessionId = null;
   state.currentQuestion = null;

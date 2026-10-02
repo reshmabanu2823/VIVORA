@@ -43,6 +43,7 @@ INTRO_SECTION_KEYWORDS = [
 # ---------- request models ----------
 class SessionIn(BaseModel):
     upload_id: str
+    code_upload_id: str | None = None
     level: Level = "normal"
     num_questions: int = Field(default=config.NUM_QUESTIONS_DEFAULT, ge=1, le=15)
 
@@ -81,7 +82,8 @@ def _session_or_404(sid: str) -> dict:
 
 
 def _section(s: dict, section_id: int) -> dict:
-    return next(x for x in s["sections"] if x["id"] == section_id)
+    all_secs = s["sections"] + s.get("code_sections", [])
+    return next((x for x in all_secs if x["id"] == section_id), s["sections"][0])
 
 
 def _score_section_meaningfulness(sec: dict) -> float:
@@ -119,30 +121,46 @@ def _pick_opening_section(sections: list[dict]) -> dict:
     return scored[0]
 
 
-def _pick_next_section(s: dict) -> dict:
-    """Document-dependent section selection for new topics based on history and coverage."""
-    sections = s["sections"]
-    if len(sections) == 1:
-        return sections[0]
+def _pick_next_section(s: dict) -> tuple[dict, str | None]:
+    """Select the next topic section balancing REPORT and CODE sources, prioritizing cross-verification mismatches."""
+    # 1. Prioritize cross-verification mismatches
+    if s.get("pending_mismatches"):
+        mismatch = s["pending_mismatches"].pop(0)
+        tech = mismatch.get("tech", "")
+        # Find a report section containing this tech mention
+        matching_sec = next((sec for sec in s["sections"] if tech.lower() in sec["text"].lower()), s["sections"][0])
+        return matching_sec, tech
+
+    # 2. Balance between report sections and code sections
+    report_pool = s["sections"]
+    code_pool = s.get("code_sections", [])
+
+    if s.get("has_code") and code_pool:
+        asked_report = sum(1 for sid in s.get("asked_sections", []) if any(x["id"] == sid for x in report_pool))
+        asked_code = sum(1 for sid in s.get("asked_sections", []) if any(x["id"] == sid for x in code_pool))
+        # Alternate or choose code if report has been asked more
+        pool = code_pool if (asked_code < asked_report or asked_report >= len(report_pool)) else report_pool
+    else:
+        pool = report_pool
 
     current_id = s["current"]["section_id"] if s.get("current") else None
-    asked_counts = {x["id"]: 0 for x in sections}
+    asked_counts = {x["id"]: 0 for x in pool}
     for sid in s.get("asked_sections", []):
         asked_counts[sid] = asked_counts.get(sid, 0) + 1
 
     weak_sections = {t["section_id"] for t in s.get("turns", []) if t.get("status") == "answered" and t.get("verdict") in ("weak", "partial")}
-    pool = [x for x in sections if x["id"] != current_id] or sections
+    eligible_pool = [x for x in pool if x["id"] != current_id] or pool
 
     def _rank_key(sec: dict):
         asked = asked_counts.get(sec["id"], 0)
         is_weak = 0 if sec["id"] in weak_sections else 1
-        substance = -_score_section_meaningfulness(sec)
+        substance = -_score_section_meaningfulness(sec) if sec.get("source") == "REPORT" else -sec.get("word_count", 0)
         return (asked, is_weak, substance, sec["id"])
 
-    return min(pool, key=_rank_key)
+    return min(eligible_pool, key=_rank_key), None
 
 
-def _validate_question(q_data: dict, section: dict) -> tuple[bool, str]:
+def _validate_question(q_data: dict, section: dict, mismatch_claim: str | None = None) -> tuple[bool, str]:
     """Strictly validate structured question format and grounding evidence."""
     if not isinstance(q_data, dict):
         return False, "Response is not a valid JSON dictionary."
@@ -155,13 +173,18 @@ def _validate_question(q_data: dict, section: dict) -> tuple[bool, str]:
     if not evidence:
         return False, "Evidence is empty."
 
+    if mismatch_claim and mismatch_claim.lower() in evidence.lower():
+        return True, ""
+
     norm_excerpt = " ".join(section["text"].lower().split())
     norm_evidence = " ".join(evidence.lower().split())
 
     if norm_evidence not in norm_excerpt:
+        if mismatch_claim and mismatch_claim.lower() in question.lower():
+            return True, ""
         return False, f"Evidence '{evidence}' is not an exact substring in the selected excerpt."
 
-    if len(evidence) < 4:
+    if len(evidence) < 3:
         return False, f"Evidence '{evidence}' is too short to prove document grounding."
 
     generic_patterns = [
@@ -182,8 +205,10 @@ def _validate_question(q_data: dict, section: dict) -> tuple[bool, str]:
 async def _generate_question(s: dict, section: dict, is_followup: bool = False,
                              history: list[dict] | None = None,
                              missed_points: list[str] | None = None,
-                             unsupported_claim: str | None = None) -> dict:
+                             unsupported_claim: str | None = None,
+                             mismatch_claim: str | None = None) -> dict:
     """Generate a question requiring structured JSON with evidence, validated against the excerpt."""
+    source = section.get("source", "REPORT")
     level = s["level"]
     sys_p = prompts.system_prompt(level)
     prompt = prompts.question_prompt(
@@ -195,7 +220,9 @@ async def _generate_question(s: dict, section: dict, is_followup: bool = False,
         history=history,
         missed_points=missed_points,
         level=level,
-        unsupported_claim=unsupported_claim
+        unsupported_claim=unsupported_claim,
+        source=source,
+        mismatch_claim=mismatch_claim
     )
 
     last_err = ""
@@ -206,7 +233,7 @@ async def _generate_question(s: dict, section: dict, is_followup: bool = False,
         )
 
         q_data = await llm.complete_json(sys_p, cur_prompt)
-        valid, last_err = _validate_question(q_data, section)
+        valid, last_err = _validate_question(q_data, section, mismatch_claim=mismatch_claim)
         if valid:
             q = {
                 "id": s["next_qid"],
@@ -214,6 +241,7 @@ async def _generate_question(s: dict, section: dict, is_followup: bool = False,
                 "section_id": section["id"],
                 "section_title": section["title"],
                 "evidence": q_data["evidence"].strip(),
+                "source": q_data.get("source", source),
                 "status": "unanswered",
             }
             s["next_qid"] += 1
@@ -224,8 +252,8 @@ async def _generate_question(s: dict, section: dict, is_followup: bool = False,
             first_part = section["text"][:80].replace("\n", " ").strip()
             last_part = section["text"][-80:].replace("\n", " ").strip()
             log.info(
-                "[GROUNDING DEBUG] section_id=%s title='%s' excerpt_preview='%s...%s' question='%s' evidence='%s'",
-                section["id"], section["title"], first_part, last_part, q["text"], q["evidence"]
+                "[GROUNDING DEBUG] source=%s section_id=%s title='%s' excerpt_preview='%s...%s' question='%s' evidence='%s'",
+                q["source"], section["id"], section["title"], first_part, last_part, q["text"], q["evidence"]
             )
             return q
 
@@ -266,10 +294,13 @@ async def upload(request: Request):
     """Accepts multipart (field 'file' = .pdf/.docx) or JSON {"text": "..."} or form field 'text'."""
     ctype = request.headers.get("content-type", "")
     filename = "pasted_text"
+    code_files = []
     try:
         if "application/json" in ctype:
             body = await request.json()
             text = (body.get("text") or "") if isinstance(body, dict) else ""
+            if isinstance(body, dict) and body.get("code_text"):
+                code_files = parsing.extract_code_files("pasted_code.py", body["code_text"].encode("utf-8"))
         else:
             form = await request.form()
             f = form.get("file")
@@ -281,6 +312,11 @@ async def upload(request: Request):
                 text = parsing.extract_text(filename, data)
             else:
                 text = str(form.get("text") or "")
+
+            cf = form.get("code_file")
+            if cf is not None and hasattr(cf, "read"):
+                cdata = await cf.read(config.MAX_UPLOAD_MB * 1024 * 1024 + 1)
+                code_files = parsing.extract_code_files(cf.filename or "code.zip", cdata)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except HTTPException:
@@ -295,12 +331,58 @@ async def upload(request: Request):
     if not sections:
         raise HTTPException(400, "Could not extract readable sections from that report.")
 
-    # Server-side upload logging per Requirement 10
-    log.info("[UPLOAD DEBUG] filename='%s' extracted_chars=%d sections=%d", filename, len(text), len(sections))
+    code_sections = parsing.split_code_sections(code_files) if code_files else []
+    uid = store.add_upload(sections, code_sections=code_sections, code_files=code_files)
+    log.info("[UPLOAD DEBUG] filename='%s' extracted_chars=%d sections=%d code_files=%d",
+             filename, len(text), len(sections), len(code_files))
 
-    uid = store.add_upload(sections)
-    return {"upload_id": uid,
-            "sections": [{"id": s["id"], "title": s["title"], "word_count": s["word_count"]} for s in sections]}
+    return {
+        "upload_id": uid,
+        "sections": [{"id": s["id"], "title": s["title"], "word_count": s["word_count"], "source": "REPORT"} for s in sections],
+        "code_files": [{"path": f["path"], "lines": f["lines"]} for f in code_files] if code_files else []
+    }
+
+
+@app.post("/upload_code")
+async def upload_code(request: Request):
+    """Accepts multipart (field 'file' = .zip/.py/.js/etc.) or JSON {"text": "...", "filename": "..."} or form 'text'."""
+    ctype = request.headers.get("content-type", "")
+    filename = "pasted_code.py"
+    try:
+        if "application/json" in ctype:
+            body = await request.json()
+            text = (body.get("text") or body.get("code") or "") if isinstance(body, dict) else ""
+            filename = (body.get("filename") or "source_code.py") if isinstance(body, dict) else "source_code.py"
+            code_files = parsing.extract_code_files(filename, text.encode("utf-8"))
+        else:
+            form = await request.form()
+            f = form.get("file") or form.get("code_file")
+            if f is not None and hasattr(f, "read"):
+                filename = f.filename or "uploaded_code.zip"
+                data = await f.read(config.MAX_UPLOAD_MB * 1024 * 1024 + 1)
+                if len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
+                    raise HTTPException(413, f"Code file too large (max {config.MAX_UPLOAD_MB} MB)")
+                code_files = parsing.extract_code_files(filename, data)
+            else:
+                text = str(form.get("text") or form.get("code") or "")
+                code_files = parsing.extract_code_files("pasted_code.py", text.encode("utf-8"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("Code upload parse failed: %s", e)
+        raise HTTPException(400, "Could not read that source code.")
+
+    code_sections = parsing.split_code_sections(code_files)
+    cuid = store.add_code_upload(code_sections, code_files)
+    log.info("[CODE UPLOAD DEBUG] filename='%s' files=%d sections=%d", filename, len(code_files), len(code_sections))
+    return {
+        "code_upload_id": cuid,
+        "total_files": len(code_files),
+        "files": [{"path": f["path"], "lines": f["lines"], "size": f["size"]} for f in code_files],
+        "sections": [{"id": s["id"], "title": s["title"], "word_count": s["word_count"], "source": "CODE"} for s in code_sections]
+    }
 
 
 @app.post("/session")
@@ -312,10 +394,49 @@ async def create_session(body: SessionIn):
     if not sections:
         raise HTTPException(400, "Report has no eligible sections for viva questions.")
 
-    s = {"sections": sections, "level": body.level, "num_questions": body.num_questions, "turns": [],
-         "asked_sections": [], "all_questions": [], "next_qid": 1, "topic_followups": 0, "current": None,
-         "finished": False, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "nudges": {}, "feedback": None,
-         "undefended_decisions": []}
+    code_sections = []
+    code_files = []
+    if body.code_upload_id:
+        code_up = store.get_upload(body.code_upload_id)
+        if code_up:
+            code_sections = code_up.get("code_sections", [])
+            code_files = code_up.get("code_files", [])
+    elif up.get("code_sections"):
+        code_sections = up.get("code_sections", [])
+        code_files = up.get("code_files", [])
+
+    max_rep_id = max((s["id"] for s in sections), default=0)
+    adjusted_code_sections = []
+    for i, cs in enumerate(code_sections, start=max_rep_id + 1):
+        cs_copy = dict(cs)
+        cs_copy["id"] = i
+        cs_copy["source"] = "CODE"
+        adjusted_code_sections.append(cs_copy)
+
+    cross_verif = parsing.detect_cross_verification(sections, code_files) if code_files else None
+    pending_mismatches = list(cross_verif.get("mismatches", [])) if cross_verif else []
+
+    s = {
+        "sections": sections,
+        "code_sections": adjusted_code_sections,
+        "code_files": code_files,
+        "has_code": bool(code_files),
+        "cross_verification": cross_verif,
+        "pending_mismatches": pending_mismatches,
+        "level": body.level,
+        "num_questions": body.num_questions,
+        "turns": [],
+        "asked_sections": [],
+        "all_questions": [],
+        "next_qid": 1,
+        "topic_followups": 0,
+        "current": None,
+        "finished": False,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "nudges": {},
+        "feedback": None,
+        "undefended_decisions": []
+    }
 
     opening_sec = _pick_opening_section(sections)
     try:
@@ -343,6 +464,7 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
     try:
         cur = s["current"]
         section = _section(s, cur["section_id"])
+        source = cur.get("source", section.get("source", "REPORT"))
         is_skipped = (status == "skipped" or answer.strip() == "(skipped)")
 
         if is_skipped:
@@ -352,6 +474,7 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 "question": cur["text"],
                 "section_id": section["id"],
                 "section_title": section["title"],
+                "source": source,
                 "answer": "[SKIPPED]",
                 "status": "skipped",
                 "duration_sec": 0,
@@ -371,6 +494,7 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 "missed": [],
                 "unsupported_claim": None,
                 "undefended_decision": None,
+                "source": source,
                 "status": "skipped"
             }
             s["topic_followups"] = 0
@@ -379,8 +503,8 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 s["finished"], s["current"] = True, None
                 return {"evaluation": evaluation, "next": {"type": "end", "question": None}}
 
-            next_sec = _pick_next_section(s)
-            q = await _generate_question(s, next_sec, is_followup=False)
+            next_sec, mismatch_claim = _pick_next_section(s)
+            q = await _generate_question(s, next_sec, is_followup=False, mismatch_claim=mismatch_claim)
             s["current"] = q
             return {"evaluation": evaluation, "next": {"type": "new_topic", "question": q}}
 
@@ -414,6 +538,7 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                 "question": cur["text"],
                 "section_id": section["id"],
                 "section_title": section["title"],
+                "source": source,
                 "answer": clean_answer,
                 "status": "answered",
                 "duration_sec": duration_sec,
@@ -427,6 +552,7 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
             })
 
             evaluation = {k: ev[k] for k in ("verdict", "covered", "missed", "unsupported_claim", "undefended_decision")}
+            evaluation["source"] = source
             evaluation["status"] = "answered"
 
             if len(s["turns"]) >= s["num_questions"]:
@@ -448,8 +574,8 @@ async def _handle_turn(s: dict, question_id: int, answer: str, duration_sec: flo
                     kind = "followup"
                 else:
                     s["topic_followups"] = 0
-                    next_sec = _pick_next_section(s)
-                    q = await _generate_question(s, next_sec, is_followup=False)
+                    next_sec, mismatch_claim = _pick_next_section(s)
+                    q = await _generate_question(s, next_sec, is_followup=False, mismatch_claim=mismatch_claim)
                     kind = "new_topic"
             except llm.LLMError as e:
                 s["turns"].pop()  # allow retry
@@ -589,6 +715,7 @@ async def feedback(body: FeedbackIn):
             {
                 "question": t["question"],
                 "section": t["section_title"],
+                "source": t.get("source", "REPORT"),
                 "status": t.get("status", "answered"),
                 "answer": t.get("answer", ""),
                 "verdict": t.get("verdict"),
@@ -604,6 +731,7 @@ async def feedback(body: FeedbackIn):
         "weak_topics": weak_topics,
         "suggestions": suggestions,
         "project_defense_weak_points": defense_weak_points,
+        "cross_verification": s.get("cross_verification"),
         "disclaimer": DISCLAIMER,
     }
     s["feedback"] = report
@@ -615,9 +743,24 @@ def transcript(session_id: str):
     s = _session_or_404(session_id)
     lines = [f"# VIVORA practice session ({s['level']})", f"Started: {s['started_at']}", ""]
     for i, t in enumerate(s["turns"], 1):
-        lines += [f"## Q{i} [{t['section_title']}]", f"**Examiner:** {t['question']}"]
+        src = t.get("source", "REPORT")
+        lines += [f"## Q{i} [{t['section_title']}] (Source: {src})", f"**Examiner:** {t['question']}"]
         if t.get("status") == "skipped":
-            lines += ["**You:** [SKIPPED]", "*Status: Skipped*", ""]
+            lines += ["**You:** [SKIPPED]", "*Status: Skipped*", f"*Source: {src}*", ""]
         else:
-            lines += [f"**You:** {t['answer']}", f"*Verdict: {t['verdict']}*", ""]
+            lines += [f"**You:** {t['answer']}", f"*Verdict: {t['verdict']}*", f"*Source: {src}*", ""]
+
+    if s.get("cross_verification") and s["cross_verification"].get("has_code"):
+        cv = s["cross_verification"]
+        lines += ["# Cross-Verification Analysis", ""]
+        if cv.get("verified"):
+            lines += ["### Verified in Code:"]
+            for v in cv["verified"]:
+                lines += [f"- **{v['tech']}**: Evidence found in `{v['evidence_in_code']}`"]
+            lines += [""]
+        if cv.get("mismatches"):
+            lines += ["### Clarification Items / Mismatches:"]
+            for m in cv["mismatches"]:
+                lines += [f"- **{m['tech']}**: {m['claim']} (No matching implementation found)"]
+            lines += [""]
     return "\n".join(lines)

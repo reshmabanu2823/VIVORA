@@ -447,4 +447,118 @@ def test_project_defense_chaining_and_grounding():
     assert q3["evidence"] in REPORT_ZK_HEALTH
 
 
+REPORT_WITH_CLAIMS = """1. System Architecture
+Our distributed architecture utilizes FastAPI for high-throughput asynchronous REST services and event handling.
+We deploy MongoDB for document storage and persistence of student submissions, sessions, and transcripts.
+Authentication is secured using JWT bearer tokens with cryptographic signing and role-based authorization controls.
+The backend API coordinates communication between the client interface and the data persistence layer efficiently.
 
+2. Implementation Details
+The server routes handle incoming requests and validate payload integrity before dispatching to worker queues.
+Database indices optimize query execution time across collections and improve high concurrency throughput.
+All API endpoints implement strict schema validation using Pydantic models to guarantee request safety.
+Worker threads process incoming batch jobs asynchronously without blocking the primary event loop.
+"""
+
+CODE_FASTAPI_ONLY = """# main.py
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI(title="Practice Service")
+
+@app.get("/status")
+def get_status():
+    return {"status": "operational", "latency_ms": 12}
+
+@app.post("/submit")
+def submit_record(data: dict):
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty submission")
+    return {"id": "rec_123", "received": True}
+"""
+
+
+def test_code_upload_and_dual_source_session():
+    # 1. Upload report
+    rep_up = client.post("/upload", json={"text": REPORT_WITH_CLAIMS}).json()
+    assert "upload_id" in rep_up
+    assert len(rep_up["sections"]) == 2
+
+    # 2. Upload code via /upload_code
+    code_up = client.post("/upload_code", json={"text": CODE_FASTAPI_ONLY, "filename": "app.py"}).json()
+    assert "code_upload_id" in code_up
+    assert code_up["total_files"] == 1
+    assert any(s["source"] == "CODE" for s in code_up["sections"])
+
+    # 3. Create session with both report and code
+    sess_r = client.post("/session", json={
+        "upload_id": rep_up["upload_id"],
+        "code_upload_id": code_up["code_upload_id"],
+        "level": "defense",
+        "num_questions": 3
+    })
+    assert sess_r.status_code == 200
+    sess_data = sess_r.json()
+    sid = sess_data["session_id"]
+    q1 = sess_data["question"]
+    assert q1["source"] in ("REPORT", "CODE")
+
+    # 4. Answer Q1 -> Turn 1 (solid answer triggers next topic)
+    r_turn1 = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q1["id"],
+        "answer": "We implemented FastAPI routes for asynchronous concurrency using ASGI server workers and Uvicorn. The modular architecture separates endpoint request routing from database parsing and payload validation with Pydantic models. This design achieved low response times under concurrent synthetic benchmark loads.",
+        "input_mode": "typed"
+    })
+    assert r_turn1.status_code == 200
+    t1_eval = r_turn1.json()["evaluation"]
+    assert "source" in t1_eval
+    q2 = r_turn1.json()["next"]["question"]
+    assert q2["source"] in ("REPORT", "CODE")
+
+    # Cross-verification detected MongoDB mismatch, question should be neutral clarification
+    assert "Your report mentions MongoDB" in q2["text"]
+    assert "dishonest" not in q2["text"].lower()
+
+    # 5. Answer Q2 -> Turn 2
+    r_turn2 = client.post("/turn", json={
+        "session_id": sid,
+        "question_id": q2["id"],
+        "answer": "MongoDB was originally planned for schema flexibility.",
+        "input_mode": "typed"
+    })
+    assert r_turn2.status_code == 200
+    q3 = r_turn2.json()["next"]["question"]
+    assert q3["source"] in ("REPORT", "CODE")
+
+    # 6. Skip Q3 -> Turn 3 (ends session)
+    r_turn3 = client.post("/skip", json={"session_id": sid, "question_id": q3["id"]})
+    assert r_turn3.status_code == 200
+    assert r_turn3.json()["next"]["type"] == "end"
+    assert r_turn3.json()["evaluation"]["status"] == "skipped"
+
+    # 7. Check Feedback
+    fb = client.post("/feedback", json={"session_id": sid}).json()
+    assert fb["summary"]["questions_asked"] == 3
+    assert fb["summary"]["questions_answered"] == 2
+    assert fb["summary"]["questions_skipped"] == 1
+
+    # Per question items must have source: REPORT or CODE
+    for item in fb["per_question"]:
+        assert item["source"] in ("REPORT", "CODE")
+
+    # Cross-verification in feedback
+    assert "cross_verification" in fb
+    cv = fb["cross_verification"]
+    assert cv["has_code"] is True
+    # FastAPI verified in code
+    verified_techs = [v["tech"] for v in cv["verified"]]
+    assert "FastAPI" in verified_techs
+    # MongoDB or JWT mismatch
+    mismatch_techs = [m["tech"] for m in cv["mismatches"]]
+    assert "MongoDB" in mismatch_techs or "JWT" in mismatch_techs
+
+    # 8. Check Transcript
+    tr_r = client.get(f"/session/{sid}/transcript")
+    assert tr_r.status_code == 200
+    assert "Source: REPORT" in tr_r.text or "Source: CODE" in tr_r.text
+    assert "Cross-Verification Analysis" in tr_r.text

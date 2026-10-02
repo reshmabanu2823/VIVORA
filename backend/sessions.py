@@ -23,11 +23,27 @@ class Store:
                 del bucket[k]
                 self._hits.pop(k, None)
 
-    def add_upload(self, sections: list[dict]) -> str:
+    def add_upload(self, sections: list[dict], code_sections: list[dict] | None = None, code_files: list[dict] | None = None) -> str:
         self._purge()
         uid = self.new_id("u")
-        self.uploads[uid] = {"sections": sections, "touched": time.time()}
+        self.uploads[uid] = {
+            "sections": sections,
+            "code_sections": code_sections or [],
+            "code_files": code_files or [],
+            "touched": time.time()
+        }
         return uid
+
+    def add_code_upload(self, code_sections: list[dict], code_files: list[dict]) -> str:
+        self._purge()
+        cuid = self.new_id("c")
+        self.uploads[cuid] = {
+            "sections": [],
+            "code_sections": code_sections,
+            "code_files": code_files,
+            "touched": time.time()
+        }
+        return cuid
 
     def get_upload(self, uid: str) -> dict | None:
         self._purge()

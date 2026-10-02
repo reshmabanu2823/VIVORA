@@ -66,24 +66,38 @@ export function setPresenceState(state) {
  */
 export function showQuestion(text, type = null, questionObj = null) {
   const el = document.getElementById('question-text');
-  const badge = document.getElementById('question-type-badge');
+  const typeBadge = document.getElementById('question-type-badge');
+  const sourceBadge = document.getElementById('question-source-badge');
+
   if (el) el.textContent = text;
-  if (badge) {
+  if (typeBadge) {
     if (type === 'followup') {
-      badge.textContent = 'Follow-up';
-      badge.hidden = false;
+      typeBadge.textContent = 'Follow-up';
+      typeBadge.hidden = false;
     } else if (type === 'new_topic') {
-      badge.textContent = 'New topic';
-      badge.hidden = false;
+      typeBadge.textContent = 'New topic';
+      typeBadge.hidden = false;
     } else {
-      badge.hidden = true;
+      typeBadge.hidden = true;
     }
   }
 
+  const source = (questionObj?.source || 'REPORT').toUpperCase();
+  if (sourceBadge) {
+    sourceBadge.textContent = source;
+    sourceBadge.className = `source-badge source-badge--${source.toLowerCase()}`;
+    sourceBadge.hidden = false;
+  }
+
   // Developer Grounding Debug box
+  const debugSource = document.getElementById('debug-source');
   const debugSec = document.getElementById('debug-section');
   const debugEv = document.getElementById('debug-evidence');
   const debugQ = document.getElementById('debug-question');
+
+  if (debugSource) {
+    debugSource.textContent = `SOURCE: ${source}`;
+  }
   if (debugSec) {
     const title = questionObj?.section_title || (questionObj?.section_id ? `Section ${questionObj.section_id}` : '--');
     debugSec.textContent = `Section: ${title}`;
@@ -193,7 +207,7 @@ export function showSections(sections) {
   const container = document.getElementById('sections-preview');
   if (!container) return;
   container.innerHTML = `
-    <p class="sections-label">Detected sections</p>
+    <p class="sections-label">Detected report sections</p>
     <ul class="sections-list">
       ${sections.map(s => `
         <li class="section-item">
@@ -208,6 +222,23 @@ export function showSections(sections) {
 
 export function hideSections() {
   const container = document.getElementById('sections-preview');
+  if (container) container.hidden = true;
+}
+
+export function showCodeFiles(files, totalFiles) {
+  const container = document.getElementById('code-preview');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="code-files-preview">
+      <span><strong>Source Code:</strong> ${totalFiles || files.length} file(s) indexed for cross-verification</span>
+      <span>${files.slice(0, 3).map(f => escapeHtml(f.path)).join(', ')}${files.length > 3 ? '...' : ''}</span>
+    </div>
+  `;
+  container.hidden = false;
+}
+
+export function hideCodeFiles() {
+  const container = document.getElementById('code-preview');
   if (container) container.hidden = true;
 }
 
@@ -251,15 +282,18 @@ export function showFeedback(data) {
       const isSkipped = q.status === 'skipped';
       const v = isSkipped ? VERDICT_LABELS.skipped : (VERDICT_LABELS[q.verdict] || VERDICT_LABELS.partial);
       const vCls = isSkipped ? 'verdict--skipped' : (q.verdict === 'strong' ? 'verdict--strong' : q.verdict === 'weak' ? 'verdict--weak' : 'verdict--partial');
+      const src = (q.source || 'REPORT').toUpperCase();
+      const srcCls = `source-badge--${src.toLowerCase()}`;
       return `
         <details class="perq-item ${isSkipped ? 'perq-item--skipped' : ''}">
           <summary class="perq-summary">
             <span class="perq-num">Q${i + 1}</span>
+            <span class="source-badge ${srcCls}">${src}</span>
             <span class="perq-q">${escapeHtml(q.question)}</span>
             <span class="verdict-tag ${vCls}">${v.text}</span>
           </summary>
           <div class="perq-detail">
-            <p class="perq-section">Section: ${escapeHtml(q.section)}</p>
+            <p class="perq-section">Section: ${escapeHtml(q.section)} &nbsp;&bull;&nbsp; Source: <strong>${src}</strong></p>
             ${isSkipped ? '<p class="perq-skipped-note"><em>Question was skipped (not answered).</em></p>' : ''}
             ${!isSkipped && q.covered && q.covered.length ? `<p class="perq-covered">Covered: ${q.covered.map(escapeHtml).join(', ')}</p>` : ''}
             ${!isSkipped && q.missed && q.missed.length ? `<p class="perq-missed">Could mention: ${q.missed.map(escapeHtml).join(', ')}</p>` : ''}
@@ -283,6 +317,49 @@ export function showFeedback(data) {
     defenseEl.hidden = false;
   } else if (defenseEl) {
     defenseEl.hidden = true;
+  }
+
+  // Cross-Verification (Report vs Code)
+  const cvEl = screen.querySelector('#feedback-cross-verification');
+  const cvContentEl = screen.querySelector('#cross-verification-content');
+  const cv = data.cross_verification;
+  if (cvEl && cv && cv.has_code) {
+    let cvHtml = '';
+    if (cv.verified && cv.verified.length) {
+      cvHtml += `
+        <div class="cross-verif-group cross-verif-group--verified">
+          <h3>Verified in Code (${cv.verified.length})</h3>
+          <ul class="cross-verif-list">
+            ${cv.verified.map(v => `
+              <li class="cross-verif-item cross-verif-item--verified">
+                <span class="cross-verif-tech">&#10003; ${escapeHtml(v.tech)}</span>
+                <span class="cross-verif-detail">${escapeHtml(v.claim)} &bull; Implemented in <code>${escapeHtml(v.evidence_in_code)}</code></span>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      `;
+    }
+    if (cv.mismatches && cv.mismatches.length) {
+      cvHtml += `
+        <div class="cross-verif-group cross-verif-group--mismatches">
+          <h3>Clarification Items / Mismatches (${cv.mismatches.length})</h3>
+          <ul class="cross-verif-list">
+            ${cv.mismatches.map(m => `
+              <li class="cross-verif-item cross-verif-item--mismatch">
+                <span class="cross-verif-tech">&#9888; ${escapeHtml(m.tech)}</span>
+                <span class="cross-verif-detail">${escapeHtml(m.claim)} &bull; No corresponding code found</span>
+                ${m.neutral_question ? `<span class="cross-verif-question">Clarification asked: "${escapeHtml(m.neutral_question)}"</span>` : ''}
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      `;
+    }
+    if (cvContentEl) cvContentEl.innerHTML = cvHtml || '<p>No specific technology claims identified to cross-verify.</p>';
+    cvEl.hidden = false;
+  } else if (cvEl) {
+    cvEl.hidden = true;
   }
 
   // Weak topics

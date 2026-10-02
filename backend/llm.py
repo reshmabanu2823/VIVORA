@@ -118,6 +118,16 @@ def _mock(system: str, user: str) -> str:
                 f"Implementation justification for {topics[0]}: Claimed performance improvements without citing baseline benchmark metrics.",
                 "Architectural trade-offs: Unable to defend technical choice against existing alternatives under edge conditions."
             ]
+        if "cross_verification" in user.lower() or "code" in user.lower():
+            payload["cross_verification"] = {
+                "has_code": True,
+                "verified": [
+                    {"tech": "FastAPI", "claim": "FastAPI backend services", "evidence_in_code": "main.py"}
+                ],
+                "mismatches": [
+                    {"tech": "MongoDB", "claim": "MongoDB database implementation claimed in report but not located in code"}
+                ]
+            }
         return json.dumps(payload)
 
     # 2. Evaluation request
@@ -151,7 +161,7 @@ def _mock(system: str, user: str) -> str:
 
     # 3. Hint / nudge request
     if "hint number" in user or "nudge number" in user:
-        excerpt_m = re.search(r"<report_excerpt>\s*(.*?)\s*</report_excerpt>", user, re.DOTALL)
+        excerpt_m = re.search(r"<(?:report|code)_excerpt>\s*(.*?)\s*</(?:report|code)_excerpt>", user, re.DOTALL)
         if excerpt_m:
             first_sentence = [s.strip() for s in re.split(r"[.!?]\s+", excerpt_m.group(1)) if len(s.strip()) > 10]
             if first_sentence:
@@ -166,11 +176,34 @@ def _mock(system: str, user: str) -> str:
     sid_m = re.search(r"Section ID:\s*(\d+)", user)
     section_id = int(sid_m.group(1)) if sid_m else 1
 
-    excerpt_m = re.search(r"<report_excerpt>\s*(.*?)\s*</report_excerpt>", user, re.DOTALL)
+    source = "CODE" if ("Knowledge Source: CODE" in user or "<code_excerpt>" in user) else "REPORT"
+
+    # Cross-verification neutral question handling
+    if "CROSS-VERIFICATION CLARIFICATION:" in user:
+        m = re.search(r'The report mentions\s*"([^"]+)"', user)
+        tech = m.group(1).strip() if m else "MongoDB"
+        return json.dumps({
+            "question": f"Your report mentions {tech}. Can you show how {tech} is implemented in the project?",
+            "section_id": section_id,
+            "section_title": title,
+            "evidence": tech,
+            "source": "REPORT"
+        })
+
+    excerpt_tag = "code_excerpt" if source == "CODE" else "report_excerpt"
+    excerpt_m = re.search(rf"<{excerpt_tag}>\s*(.*?)\s*</{excerpt_tag}>", user, re.DOTALL)
+    if not excerpt_m:
+        excerpt_m = re.search(r"<(?:report|code)_excerpt>\s*(.*?)\s*</(?:report|code)_excerpt>", user, re.DOTALL)
     excerpt = excerpt_m.group(1).strip() if excerpt_m else "Project report excerpt."
 
-    # Extract sentences from excerpt
-    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", excerpt) if len(s.strip()) > 15]
+    # Extract sentences / lines from excerpt
+    if source == "CODE":
+        raw_sentences = [line.strip() for line in excerpt.splitlines() if len(line.strip()) > 15 and not line.strip().startswith("//") and not line.strip().startswith("#")]
+        if not raw_sentences:
+            raw_sentences = [s.strip() for s in re.split(r"(?<=[;{}])\s+", excerpt) if len(s.strip()) > 10]
+    else:
+        raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", excerpt) if len(s.strip()) > 15]
+
     if not raw_sentences:
         raw_sentences = [excerpt[:120].strip()]
 
@@ -201,29 +234,38 @@ def _mock(system: str, user: str) -> str:
     elif "strict" in system.lower():
         level = "strict"
 
-    if level == "warmup":
-        question = f"In the {title} section, can you explain how '{phrase}' operates within your project?"
-    elif level == "defense":
-        if "unsupported claim" in user.lower():
-            question = f"What did you compare '{phrase}' against, and how did you measure that improvement?"
-        elif "previous question:" in user.lower():
-            chain_q = [
-                f"Why did you choose '{phrase}' for your system over existing alternatives?",
-                f"What concrete evidence or experimental results in your evaluation support '{phrase}'?",
-                f"What are the primary technical limitations of '{phrase}' under adverse conditions?",
-                f"What specific alternatives to '{phrase}' did you consider, and why were they rejected?"
-            ]
-            question = chain_q[already_count % len(chain_q)]
+    if source == "CODE":
+        if level == "defense":
+            question = f"In {title}, why was '{phrase}' implemented in this manner, and what trade-offs were accepted?"
+        elif level == "strict":
+            question = f"Examining '{phrase}' in {title}, how does this implementation perform under adverse load conditions?"
         else:
-            question = f"In your implementation of '{phrase}', what alternative technologies existed and why was this chosen?"
-    elif level == "strict":
-        question = f"Your report states '{phrase}'. What specific quantitative evidence and trade-offs support this choice?"
+            question = f"In your code for {title}, what is the specific role of '{phrase}' during execution?"
     else:
-        question = f"Regarding your work in {title}, what was the primary rationale behind '{phrase}'?"
+        if level == "warmup":
+            question = f"In the {title} section, can you explain how '{phrase}' operates within your project?"
+        elif level == "defense":
+            if "unsupported claim" in user.lower():
+                question = f"What did you compare '{phrase}' against, and how did you measure that improvement?"
+            elif "previous question:" in user.lower():
+                chain_q = [
+                    f"Why did you choose '{phrase}' for your system over existing alternatives?",
+                    f"What concrete evidence or experimental results in your evaluation support '{phrase}'?",
+                    f"What are the primary technical limitations of '{phrase}' under adverse conditions?",
+                    f"What specific alternatives to '{phrase}' did you consider, and why were they rejected?"
+                ]
+                question = chain_q[already_count % len(chain_q)]
+            else:
+                question = f"In your implementation of '{phrase}', what alternative technologies existed and why was this chosen?"
+        elif level == "strict":
+            question = f"Your report states '{phrase}'. What specific quantitative evidence and trade-offs support this choice?"
+        else:
+            question = f"Regarding your work in {title}, what was the primary rationale behind '{phrase}'?"
 
     return json.dumps({
         "question": question,
         "section_id": section_id,
         "section_title": title,
-        "evidence": phrase
+        "evidence": phrase,
+        "source": source
     })

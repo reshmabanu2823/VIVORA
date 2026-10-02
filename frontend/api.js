@@ -31,18 +31,26 @@ let _mockSections = [
 function _makeMockQuestion(sec, qid) {
   const words = (sec.text || sec.title).split(/\s+/);
   const snippet = words.slice(0, Math.min(6, words.length)).join(' ');
+  const source = sec.source || (sec.title && sec.title.startsWith('Code:') ? 'CODE' : 'REPORT');
   return {
     id: qid,
     text: `Regarding "${snippet}" in ${sec.title}, can you walk me through the specific design choices and tradeoffs?`,
     section_id: sec.id,
     section_title: sec.title,
     evidence: snippet,
+    source,
   };
 }
 
 const MOCK_RESPONSES = {
   health: { status: 'ok', llm_provider: 'mock' },
-  upload: { upload_id: 'u_mock01', sections: _mockSections.map(s => ({ id: s.id, title: s.title, word_count: s.word_count })) },
+  upload: { upload_id: 'u_mock01', sections: _mockSections.map(s => ({ id: s.id, title: s.title, word_count: s.word_count, source: 'REPORT' })) },
+  code_upload: {
+    code_upload_id: 'c_mock01',
+    total_files: 2,
+    files: [{ path: 'main.py', lines: 45, size: 1200 }, { path: 'utils.py', lines: 30, size: 800 }],
+    sections: [{ id: 101, title: 'Code: main.py', word_count: 320, source: 'CODE' }],
+  },
   session: () => {
     _mockTurnCount = 0;
     const sec = _mockSections[1] || _mockSections[0];
@@ -58,9 +66,11 @@ const MOCK_RESPONSES = {
     const verdicts = ['strong', 'partial', 'weak'];
     const verdict = verdicts[_mockTurnCount % 3];
     const nextSec = _mockSections[_mockTurnCount % _mockSections.length];
+    const source = (nextSec.source || 'REPORT');
     return {
       evaluation: {
         verdict,
+        source,
         covered: ['main concept', 'system design'],
         missed: verdict !== 'strong' ? ['performance benchmarks', 'error handling rationale'] : [],
       },
@@ -76,11 +86,13 @@ const MOCK_RESPONSES = {
     _mockTurnCount++;
     const isLast = _mockTurnCount >= 5;
     const nextSec = _mockSections[_mockTurnCount % _mockSections.length];
+    const source = (nextSec.source || 'REPORT');
     return {
       evaluation: {
         verdict: null,
         covered: [],
         missed: [],
+        source,
         status: 'skipped',
       },
       next: isLast
@@ -108,6 +120,7 @@ const MOCK_RESPONSES = {
       return {
         question: qObj.text,
         section: sec.title,
+        source: qObj.source || 'REPORT',
         status: 'answered',
         verdict: ['strong', 'partial', 'weak', 'strong', 'partial'][i],
         covered: ['main idea', 'system design'],
@@ -119,6 +132,16 @@ const MOCK_RESPONSES = {
       'Performance evaluation: Claimed 42% latency reduction without documenting comparative hardware baselines.',
       'Implementation trade-offs: Did not justify choosing zero-copy queues over standard POSIX message channels.'
     ],
+    cross_verification: {
+      has_code: true,
+      total_files: 2,
+      verified: [
+        { tech: 'Rust', claim: 'Implemented in Rust', evidence_in_code: 'scheduler.rs', status: 'verified' }
+      ],
+      mismatches: [
+        { tech: 'MongoDB', claim: 'Report claims MongoDB is used', status: 'mismatch', neutral_question: 'Your report mentions MongoDB. Can you show how MongoDB is implemented in the project?' }
+      ]
+    },
     suggestions: [
       'Include specific figures or metrics from your results when addressing evaluation questions.',
       'Clearly justify why you chose your methodology over alternatives.',
@@ -126,7 +149,7 @@ const MOCK_RESPONSES = {
     ],
     disclaimer: 'Practice feedback only. It is not an official grade.',
   },
-  transcript: `# VIVORA practice session (normal)\nStarted: 2026-10-01T11:00:00\n\n## Q1 [Methodology]\n**Examiner:** Regarding the proposed algorithm in Methodology, can you explain the tradeoffs?\n**You:** We evaluated latency and throughput...\n*Verdict: strong*\n`,
+  transcript: `# VIVORA practice session (normal)\nStarted: 2026-10-01T11:00:00\n\n## Q1 [Methodology] (Source: REPORT)\n**Examiner:** Regarding the proposed algorithm in Methodology, can you explain the tradeoffs?\n**You:** We evaluated latency and throughput...\n*Verdict: strong*\n*Source: REPORT*\n`,
 };
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -197,18 +220,48 @@ export async function uploadText(text) {
 }
 
 /**
+ * Upload a source code archive (.zip) or single code file.
+ * @param {File} file
+ * @returns {Promise<{code_upload_id: string, total_files: number, files: Array, sections: Array}>}
+ */
+export async function uploadCodeFile(file) {
+  if (MOCK_MODE) return MOCK_RESPONSES.code_upload;
+  const form = new FormData();
+  form.append('file', file);
+  return apiJSON('/upload_code', { method: 'POST', body: form });
+}
+
+/**
+ * Upload raw source code text.
+ * @param {string} text
+ * @param {string} [filename]
+ * @returns {Promise<{code_upload_id: string, total_files: number, files: Array, sections: Array}>}
+ */
+export async function uploadCodeText(text, filename = 'source_code.py') {
+  if (MOCK_MODE) return MOCK_RESPONSES.code_upload;
+  return apiJSON('/upload_code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, filename }),
+  });
+}
+
+/**
  * Create a new practice session.
  * @param {string} uploadId
  * @param {'warmup'|'normal'|'strict'|'defense'} level
  * @param {number} numQuestions
+ * @param {string|null} [codeUploadId]
  * @returns {Promise<{session_id, question, silence_nudge_seconds}>}
  */
-export async function createSession(uploadId, level, numQuestions) {
+export async function createSession(uploadId, level, numQuestions, codeUploadId = null) {
   if (MOCK_MODE) { return typeof MOCK_RESPONSES.session === 'function' ? MOCK_RESPONSES.session() : MOCK_RESPONSES.session; }
+  const payload = { upload_id: uploadId, level, num_questions: numQuestions };
+  if (codeUploadId) payload.code_upload_id = codeUploadId;
   return apiJSON('/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ upload_id: uploadId, level, num_questions: numQuestions }),
+    body: JSON.stringify(payload),
   });
 }
 

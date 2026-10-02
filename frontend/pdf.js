@@ -136,11 +136,12 @@ export function generateTranscriptPDF(feedback, state = {}) {
     doc.setTextColor(26, 42, 74);
     doc.text(`Q${qNum}`, marginX, y);
 
-    // Section title
+    // Section title & Source label
+    const sourceLabel = (turn.source || 'REPORT').toUpperCase();
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Section: ${cleanText(turn.section || 'General')}`, marginX + 14, y);
+    doc.text(`Section: ${cleanText(turn.section || 'General')}   |   Source: ${sourceLabel}`, marginX + 14, y);
     y += 6;
 
     // Question
@@ -150,12 +151,12 @@ export function generateTranscriptPDF(feedback, state = {}) {
 
     // Status Badge / Text
     if (isSkipped) {
-      printLine('Status: SKIPPED', marginX, contentWidth, 4.8, 'bold', [100, 116, 139], 9.5);
+      printLine(`Status: SKIPPED (Source: ${sourceLabel})`, marginX, contentWidth, 4.8, 'bold', [100, 116, 139], 9.5);
       y += 1;
       printLine('Student Answer: Skipped', marginX, contentWidth, 4.8, 'italic', [100, 116, 139], 9.5);
       y += 3;
     } else {
-      printLine('Status: ANSWERED', marginX, contentWidth, 4.8, 'bold', [22, 101, 52], 9.5);
+      printLine(`Status: ANSWERED (Source: ${sourceLabel})`, marginX, contentWidth, 4.8, 'bold', [22, 101, 52], 9.5);
       y += 1;
 
       // Student Answer
@@ -229,6 +230,42 @@ export function generateTranscriptPDF(feedback, state = {}) {
 
     for (const pt of defensePoints) {
       printLine(`•  ${cleanText(pt)}`, marginX + 4, contentWidth - 4, 4.8, 'normal', [153, 27, 27], 9.5);
+    }
+    y += 4;
+  }
+
+  // ── Cross-Verification Section (if code was uploaded) ─────────────────────
+  const cv = feedback.cross_verification;
+  if (cv && cv.has_code) {
+    ensureSpace(40);
+    doc.setDrawColor(59, 130, 246);
+    doc.setLineWidth(0.6);
+    doc.line(marginX, y, marginX + contentWidth, y);
+    y += 8;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(30, 58, 138); // Blue
+    doc.text('Cross-Verification Analysis (Report vs Code)', marginX, y);
+    y += 6.5;
+
+    if (cv.verified && cv.verified.length > 0) {
+      printLine('Verified in Implementation:', marginX + 2, contentWidth - 2, 4.8, 'bold', [22, 101, 52], 9.5);
+      for (const v of cv.verified) {
+        printLine(`•  [Verified] ${cleanText(v.tech)}: Claim substantiated in code (${cleanText(v.evidence_in_code)})`, marginX + 4, contentWidth - 4, 4.8, 'normal', [22, 101, 52], 9);
+      }
+      y += 2;
+    }
+
+    if (cv.mismatches && cv.mismatches.length > 0) {
+      printLine('Clarification Items / Implementation Mismatches:', marginX + 2, contentWidth - 2, 4.8, 'bold', [180, 83, 9], 9.5);
+      for (const m of cv.mismatches) {
+        printLine(`•  [Mismatch] ${cleanText(m.tech)}: Claimed in report, but no implementation located in codebase.`, marginX + 4, contentWidth - 4, 4.8, 'normal', [180, 83, 9], 9);
+        if (m.neutral_question) {
+          printLine(`    Clarification asked: "${cleanText(m.neutral_question)}"`, marginX + 4, contentWidth - 4, 4.5, 'italic', [120, 53, 15], 8.5);
+        }
+      }
+      y += 2;
     }
     y += 4;
   }
