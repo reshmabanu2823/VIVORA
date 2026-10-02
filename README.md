@@ -1,4 +1,4 @@
-# VIVORA 🎤
+# VIVORA
 
 **A voice-based viva practice partner that questions you on your own project.**
 
